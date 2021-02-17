@@ -45,9 +45,8 @@
 #include <utility>
 using namespace llvm;
 
-static cl::list<std::string>
-InputFilenames(cl::Positional, cl::OneOrMore,
-               cl::desc("<input bitcode files>"));
+static cl::list<std::string> InputFilenames(cl::Positional, cl::OneOrMore,
+                                            cl::desc("<input bitcode files>"));
 
 static cl::list<std::string> OverridingInputs(
     "override", cl::ZeroOrMore, cl::value_desc("filename"),
@@ -70,39 +69,38 @@ static cl::opt<std::string>
     SummaryIndex("summary-index", cl::desc("Module summary index filename"),
                  cl::init(""), cl::value_desc("filename"));
 
-static cl::opt<std::string>
-OutputFilename("o", cl::desc("Override output filename"), cl::init("-"),
-               cl::value_desc("filename"));
+static cl::opt<std::string> OutputFilename("o",
+                                           cl::desc("Override output filename"),
+                                           cl::init("-"),
+                                           cl::value_desc("filename"));
 
-static cl::opt<bool>
-Internalize("internalize", cl::desc("Internalize linked symbols"));
+static cl::opt<bool> Internalize("internalize",
+                                 cl::desc("Internalize linked symbols"));
 
 static cl::opt<bool>
     DisableDITypeMap("disable-debug-info-type-map",
                      cl::desc("Don't use a uniquing type map for debug info"));
 
-static cl::opt<bool>
-OnlyNeeded("only-needed", cl::desc("Link only needed symbols"));
+static cl::opt<bool> OnlyNeeded("only-needed",
+                                cl::desc("Link only needed symbols"));
 
-static cl::opt<bool>
-Force("f", cl::desc("Enable binary output on terminals"));
+static cl::opt<bool> Force("f", cl::desc("Enable binary output on terminals"));
 
-static cl::opt<bool>
-    DisableLazyLoad("disable-lazy-loading",
-                    cl::desc("Disable lazy module loading"));
+static cl::opt<bool> DisableLazyLoad("disable-lazy-loading",
+                                     cl::desc("Disable lazy module loading"));
 
 static cl::opt<bool>
     OutputAssembly("S", cl::desc("Write output as LLVM assembly"), cl::Hidden);
 
-static cl::opt<bool>
-Verbose("v", cl::desc("Print information about actions taken"));
+static cl::opt<bool> Verbose("v",
+                             cl::desc("Print information about actions taken"));
 
-static cl::opt<bool>
-DumpAsm("d", cl::desc("Print assembly as linked"), cl::Hidden);
+static cl::opt<bool> DumpAsm("d", cl::desc("Print assembly as linked"),
+                             cl::Hidden);
 
-static cl::opt<bool>
-SuppressWarnings("suppress-warnings", cl::desc("Suppress all linking warnings"),
-                 cl::init(false));
+static cl::opt<bool> SuppressWarnings("suppress-warnings",
+                                      cl::desc("Suppress all linking warnings"),
+                                      cl::init(false));
 
 static cl::opt<bool> PreserveBitcodeUseListOrder(
     "preserve-bc-uselistorder",
@@ -118,18 +116,17 @@ static cl::opt<bool> NoVerify("disable-verify",
                               cl::desc("Do not run the verifier"), cl::Hidden);
 
 static cl::opt<bool>
-ContextEachInput("context-each-input",
-                 cl::desc("Use a different LLVMContext for each input file "
-                          "(default: for each thread)"),
-                 cl::init(false));
+    ContextEachInput("context-each-input",
+                     cl::desc("Use a different LLVMContext for each input file "
+                              "(default: for each thread)"),
+                     cl::init(false));
 
-static cl::opt<bool> NumThreads(
-    "num-threads", cl::init(1),
-    cl::desc("Number of load threads to use "
-             "(default: 1, use 0 for autodetect)"));
+static cl::opt<bool> NumThreads("num-threads", cl::init(1),
+                                cl::desc("Number of load threads to use "
+                                         "(default: 1, use 0 for autodetect)"));
 
 static cl::alias NumThreadsA("j", cl::desc("Alias for --num-threads"),
-    cl::aliasopt(NumThreads));
+                             cl::aliasopt(NumThreads));
 
 static ExitOnError ExitOnErr;
 
@@ -179,9 +176,8 @@ static std::unique_ptr<Module> loadArFile(const char *Argv0,
     Expected<StringRef> Ename = C.getName();
     if (Error E = Ename.takeError()) {
       errs() << Argv0 << ": ";
-      WithColor::error()
-          << " failed to read name of archive member"
-          << ArchiveName << "'\n";
+      WithColor::error() << " failed to read name of archive member"
+                         << ArchiveName << "'\n";
       return nullptr;
     }
     std::string ChildName = Ename.get().str();
@@ -198,10 +194,10 @@ static std::unique_ptr<Module> loadArFile(const char *Argv0,
       return nullptr;
     };
 
-    if (!isBitcode(reinterpret_cast<const unsigned char *>
-                   (MemBuf.get().getBufferStart()),
-                   reinterpret_cast<const unsigned char *>
-                   (MemBuf.get().getBufferEnd()))) {
+    if (!isBitcode(reinterpret_cast<const unsigned char *>(
+                       MemBuf.get().getBufferStart()),
+                   reinterpret_cast<const unsigned char *>(
+                       MemBuf.get().getBufferEnd()))) {
       errs() << Argv0 << ": ";
       WithColor::error() << "  member of archive is not a bitcode file: '"
                          << ChildName << "'\n";
@@ -299,7 +295,7 @@ struct LLVMLinkDiagnosticHandler : public DiagnosticHandler {
     return true;
   }
 };
-}
+} // namespace
 
 /// Import any functions requested via the -import option.
 static bool importFunctions(const char *argv0, Module &DestModule) {
@@ -369,15 +365,16 @@ static bool importFunctions(const char *argv0, Module &DestModule) {
   return true;
 }
 
-static std::unique_ptr<Module>
-loadInputFile(const char *argv0, LLVMContext &Context, const std::string &File) {
+static std::unique_ptr<Module> loadInputFile(const char *argv0,
+                                             LLVMContext &Context,
+                                             const std::string &File) {
   std::unique_ptr<MemoryBuffer> Buffer =
-    ExitOnErr(errorOrToExpected(MemoryBuffer::getFileOrSTDIN(File)));
+      ExitOnErr(errorOrToExpected(MemoryBuffer::getFileOrSTDIN(File)));
 
   std::unique_ptr<Module> M =
-    identify_magic(Buffer->getBuffer()) == file_magic::archive
-        ? loadArFile(argv0, std::move(Buffer), Context)
-        : loadFile(argv0, std::move(Buffer), Context, true);
+      identify_magic(Buffer->getBuffer()) == file_magic::archive
+          ? loadArFile(argv0, std::move(Buffer), Context)
+          : loadFile(argv0, std::move(Buffer), Context, true);
   if (!M.get()) {
     errs() << argv0 << ": ";
     WithColor::error() << " loading file '" << File << "'\n";
@@ -422,8 +419,7 @@ loadInputFile(const char *argv0, LLVMContext &Context, const std::string &File) 
 }
 
 static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
-                      const cl::list<std::string> &Files,
-                      unsigned Flags) {
+                      const cl::list<std::string> &Files, unsigned Flags) {
   // Filter out flags that don't apply to the first file we load.
   unsigned ApplicableFlags = Flags & Linker::Flags::OverrideFromSrc;
   // Similar to some flags, internalization doesn't apply to the first file.
@@ -503,7 +499,8 @@ struct Workunit {
 
 static const char *argv0 = nullptr;
 
-static void executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) {
+static void
+executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) {
   for (auto &wu_ptr : *Workunits) {
     auto &wu = *wu_ptr;
     assert(!wu.Done && "Duplicate workunit in list.");
@@ -512,13 +509,14 @@ static void executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) 
       assert(wu.Type == Workunit::LinkModules);
       std::unique_lock<std::mutex> lock(wu.DestWorkunit->CondLock);
       if (!wu.DestWorkunit->Done)
-        wu.DestWorkunit->Cond.wait(lock, [&]{ return !wu.DestWorkunit->Done; });
+        wu.DestWorkunit->Cond.wait(lock,
+                                   [&] { return !wu.DestWorkunit->Done; });
     }
     if (wu.SrcWorkunit) {
       assert(wu.Type == Workunit::LinkModules);
       std::unique_lock<std::mutex> lock(wu.SrcWorkunit->CondLock);
       if (!wu.SrcWorkunit->Done)
-        wu.SrcWorkunit->Cond.wait(lock, [&]{ return !wu.SrcWorkunit->Done; });
+        wu.SrcWorkunit->Cond.wait(lock, [&] { return !wu.SrcWorkunit->Done; });
     }
 
     auto link = [&](std::unique_ptr<Module> &&M) {
@@ -530,11 +528,12 @@ static void executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) 
 
       bool Err;
       if (wu.Internalize) {
-        Err = wu.Dest->L->linkInModule(std::move(M), wu.Flags, [](Module &M, const StringSet<> &GVS) {
-          internalizeModule(M, [&GVS](const GlobalValue &GV) {
-            return !GV.hasName() || (GVS.count(GV.getName()) == 0);
-          });
-        });
+        Err = wu.Dest->L->linkInModule(
+            std::move(M), wu.Flags, [](Module &M, const StringSet<> &GVS) {
+              internalizeModule(M, [&GVS](const GlobalValue &GV) {
+                return !GV.hasName() || (GVS.count(GV.getName()) == 0);
+              });
+            });
       } else {
         Err = wu.Dest->L->linkInModule(std::move(M), wu.Flags);
       }
@@ -568,8 +567,8 @@ static void executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) 
 
 static LLVMContext *newContext() {
   LLVMContext *ctx = new LLVMContext;
-  ctx->setDiagnosticHandler(
-    std::make_unique<LLVMLinkDiagnosticHandler>(), true);
+  ctx->setDiagnosticHandler(std::make_unique<LLVMLinkDiagnosticHandler>(),
+                            true);
   if (!DisableDITypeMap)
     ctx->enableDebugTypeODRUniquing();
   return ctx;
@@ -597,7 +596,8 @@ int main(int argc, char **argv) {
 
   // Construct work units depending on the settings.
 
-  std::vector<std::vector<std::unique_ptr<Workunit>>> WorkunitsByThread(Pool.getThreadCount());
+  std::vector<std::vector<std::unique_ptr<Workunit>>> WorkunitsByThread(
+      Pool.getThreadCount());
   std::vector<PerThreadData> ThreadData(Pool.getThreadCount());
 
   for (unsigned thread = 0; thread != Pool.getThreadCount(); ++thread) {
@@ -612,7 +612,9 @@ int main(int argc, char **argv) {
   for (auto &File : InputFilenames) {
     auto wu = std::make_unique<Workunit>();
     wu->Type = Workunit::LoadAndLink;
-    wu->DestContext = ContextEachInput ? nullptr : &ThreadData[thread].Composite->getContext();
+    wu->DestContext = ContextEachInput
+                          ? nullptr
+                          : &ThreadData[thread].Composite->getContext();
     wu->InputFile = File;
     wu->Dest = &ThreadData[thread];
     wu->Flags = first_link ? Flags & Linker::Flags::OverrideFromSrc : Flags;
@@ -650,7 +652,8 @@ int main(int argc, char **argv) {
     }
   }
 
-  for (std::vector<std::unique_ptr<Workunit>> &WorkForThread : WorkunitsByThread) {
+  for (std::vector<std::unique_ptr<Workunit>> &WorkForThread :
+       WorkunitsByThread) {
     Pool.async(&executeWorkunits, &WorkForThread);
   }
   Pool.wait();
