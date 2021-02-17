@@ -499,6 +499,15 @@ struct Workunit {
 
 static const char *argv0 = nullptr;
 
+static LLVMContext *newContext() {
+  LLVMContext *ctx = new LLVMContext;
+  ctx->setDiagnosticHandler(std::make_unique<LLVMLinkDiagnosticHandler>(),
+                            true);
+  if (!DisableDITypeMap)
+    ctx->enableDebugTypeODRUniquing();
+  return ctx;
+}
+
 static void
 executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) {
   for (auto &wu_ptr : *Workunits) {
@@ -544,7 +553,10 @@ executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) {
 
     switch (wu.Type) {
     case Workunit::LoadAndLink: {
-      auto M = loadInputFile(argv0, *wu.DestContext, wu.InputFile);
+      LLVMContext *context = wu.DestContext;
+      if (!context)
+        context = newContext();
+      auto M = loadInputFile(argv0, *context, wu.InputFile);
       if (!M) {
         wu.Dest->L.reset();
         break;
@@ -563,15 +575,6 @@ executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) {
     wu.Done = true;
     wu.Cond.notify_all();
   }
-}
-
-static LLVMContext *newContext() {
-  LLVMContext *ctx = new LLVMContext;
-  ctx->setDiagnosticHandler(std::make_unique<LLVMLinkDiagnosticHandler>(),
-                            true);
-  if (!DisableDITypeMap)
-    ctx->enableDebugTypeODRUniquing();
-  return ctx;
 }
 
 int main(int argc, char **argv) {
