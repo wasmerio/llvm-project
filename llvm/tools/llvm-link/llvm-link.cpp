@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -28,9 +29,12 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Mutex.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/SystemUtils.h"
+#include "llvm/Support/ThreadPool.h"
+#include "llvm/Support/Threading.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/Transforms/IPO/FunctionImport.h"
@@ -112,6 +116,20 @@ static cl::opt<bool> PreserveAssemblyUseListOrder(
 
 static cl::opt<bool> NoVerify("disable-verify",
                               cl::desc("Do not run the verifier"), cl::Hidden);
+
+static cl::opt<bool>
+ContextEachInput("context-each-input",
+                 cl::desc("Use a different LLVMContext for each input file "
+                          "(default: for each thread)"),
+                 cl::init(false));
+
+static cl::opt<bool> NumThreads(
+    "num-threads", cl::init(1),
+    cl::desc("Number of load threads to use "
+             "(default: 1, use 0 for autodetect)"));
+
+static cl::alias NumThreadsA("j", cl::desc("Alias for --num-threads"),
+    cl::aliasopt(NumThreads));
 
 static ExitOnError ExitOnErr;
 
@@ -351,6 +369,58 @@ static bool importFunctions(const char *argv0, Module &DestModule) {
   return true;
 }
 
+static std::unique_ptr<Module>
+loadInputFile(const char *argv0, LLVMContext &Context, const std::string &File) {
+  std::unique_ptr<MemoryBuffer> Buffer =
+    ExitOnErr(errorOrToExpected(MemoryBuffer::getFileOrSTDIN(File)));
+
+  std::unique_ptr<Module> M =
+    identify_magic(Buffer->getBuffer()) == file_magic::archive
+        ? loadArFile(argv0, std::move(Buffer), Context)
+        : loadFile(argv0, std::move(Buffer), Context, true);
+  if (!M.get()) {
+    errs() << argv0 << ": ";
+    WithColor::error() << " loading file '" << File << "'\n";
+    return nullptr;
+  }
+
+  // Note that when ODR merging types cannot verify input files in here. When
+  // doing that debug metadata in the src module might already be pointing to
+  // the destination.
+  if (DisableDITypeMap && !NoVerify && verifyModule(*M, &errs())) {
+    errs() << argv0 << ": " << File << ": ";
+    WithColor::error() << "input module is broken!\n";
+    return nullptr;
+  }
+
+  // If a module summary index is supplied, load it so linkInModule can treat
+  // local functions/variables as exported and promote if necessary.
+  if (!SummaryIndex.empty()) {
+    std::unique_ptr<ModuleSummaryIndex> Index =
+        ExitOnErr(llvm::getModuleSummaryIndexForFile(SummaryIndex));
+
+    // Conservatively mark all internal values as promoted, since this tool
+    // does not do the ThinLink that would normally determine what values to
+    // promote.
+    for (auto &I : *Index) {
+      for (auto &S : I.second.SummaryList) {
+        if (GlobalValue::isLocalLinkage(S->linkage()))
+          S->setLinkage(GlobalValue::ExternalLinkage);
+      }
+    }
+
+    // Promotion
+    if (renameModuleForThinLTO(*M, *Index,
+                               /*ClearDSOLocalOnDeclarations=*/false)) {
+      errs() << argv0 << ": " << File << ": ";
+      WithColor::error() << "applying summary index file failed!\n";
+      return nullptr;
+    }
+  }
+
+  return M;
+}
+
 static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
                       const cl::list<std::string> &Files,
                       unsigned Flags) {
@@ -359,49 +429,10 @@ static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
   // Similar to some flags, internalization doesn't apply to the first file.
   bool InternalizeLinkedSymbols = false;
   for (const auto &File : Files) {
-    std::unique_ptr<MemoryBuffer> Buffer =
-        ExitOnErr(errorOrToExpected(MemoryBuffer::getFileOrSTDIN(File)));
+    std::unique_ptr<Module> M(loadInputFile(argv0, Context, File));
 
-    std::unique_ptr<Module> M =
-        identify_magic(Buffer->getBuffer()) == file_magic::archive
-            ? loadArFile(argv0, std::move(Buffer), Context)
-            : loadFile(argv0, std::move(Buffer), Context);
-    if (!M.get()) {
-      errs() << argv0 << ": ";
-      WithColor::error() << " loading file '" << File << "'\n";
+    if (!M.get())
       return false;
-    }
-
-    // Note that when ODR merging types cannot verify input files in here When
-    // doing that debug metadata in the src module might already be pointing to
-    // the destination.
-    if (DisableDITypeMap && !NoVerify && verifyModule(*M, &errs())) {
-      errs() << argv0 << ": " << File << ": ";
-      WithColor::error() << "input module is broken!\n";
-      return false;
-    }
-
-    // If a module summary index is supplied, load it so linkInModule can treat
-    // local functions/variables as exported and promote if necessary.
-    if (!SummaryIndex.empty()) {
-      std::unique_ptr<ModuleSummaryIndex> Index =
-          ExitOnErr(llvm::getModuleSummaryIndexForFile(SummaryIndex));
-
-      // Conservatively mark all internal values as promoted, since this tool
-      // does not do the ThinLink that would normally determine what values to
-      // promote.
-      for (auto &I : *Index) {
-        for (auto &S : I.second.SummaryList) {
-          if (GlobalValue::isLocalLinkage(S->linkage()))
-            S->setLinkage(GlobalValue::ExternalLinkage);
-        }
-      }
-
-      // Promotion
-      if (renameModuleForThinLTO(*M, *Index,
-                                 /*ClearDSOLocalOnDeclarations=*/false))
-        return true;
-    }
 
     if (Verbose)
       errs() << "Linking in '" << File << "'\n";
@@ -431,28 +462,205 @@ static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
   return true;
 }
 
+struct PerThreadData {
+  std::unique_ptr<Module> Composite;
+  std::mutex LLock;
+  std::unique_ptr<Linker> L;
+};
+
+struct Workunit {
+  enum {
+    // The file in InputFile is loaded into DestContext, then linked into
+    // Dest->L with the given Flags. If DestContext is nullptr then a new
+    // LLVMContext is created for this module and linking is performed
+    // across contexts.
+    LoadAndLink,
+
+    // The module in Src->Composite is linked into Linker Dest->L with Flags.
+    // Before starting, it waits on the condition variables in both SrcWorkunit
+    // and DestWorkunit. DestWorkunit is only used for its condition variable.
+    LinkModules,
+  } Type;
+
+  // Both LoadAndLink and LinkModules:
+  PerThreadData *Dest;
+  unsigned Flags = Linker::Flags::None;
+  bool Internalize = false;
+
+  // LoadAndLink only:
+  LLVMContext *DestContext = nullptr;
+  std::string InputFile;
+
+  // LinkModules only:
+  Workunit *SrcWorkunit = nullptr;
+  Workunit *DestWorkunit = nullptr;
+
+  // All work units. Notified upon completion of this workunit.
+  bool Done = false;
+  std::mutex CondLock;
+  std::condition_variable Cond;
+};
+
+static const char *argv0 = nullptr;
+
+static void executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) {
+  for (auto &wu_ptr : *Workunits) {
+    auto &wu = *wu_ptr;
+    assert(!wu.Done && "Duplicate workunit in list.");
+
+    if (wu.DestWorkunit) {
+      assert(wu.Type == Workunit::LinkModules);
+      std::unique_lock<std::mutex> lock(wu.DestWorkunit->CondLock);
+      if (!wu.DestWorkunit->Done)
+        wu.DestWorkunit->Cond.wait(lock, [&]{ return !wu.DestWorkunit->Done; });
+    }
+    if (wu.SrcWorkunit) {
+      assert(wu.Type == Workunit::LinkModules);
+      std::unique_lock<std::mutex> lock(wu.SrcWorkunit->CondLock);
+      if (!wu.SrcWorkunit->Done)
+        wu.SrcWorkunit->Cond.wait(lock, [&]{ return !wu.SrcWorkunit->Done; });
+    }
+
+    auto link = [&](std::unique_ptr<Module> &&M) {
+      std::unique_lock<std::mutex> lock(wu.Dest->LLock);
+
+      // Happens when an error was encountered earlier.
+      if (!wu.Dest->L)
+        return;
+
+      bool Err;
+      if (wu.Internalize) {
+        Err = wu.Dest->L->linkInModule(std::move(M), wu.Flags, [](Module &M, const StringSet<> &GVS) {
+          internalizeModule(M, [&GVS](const GlobalValue &GV) {
+            return !GV.hasName() || (GVS.count(GV.getName()) == 0);
+          });
+        });
+      } else {
+        Err = wu.Dest->L->linkInModule(std::move(M), wu.Flags);
+      }
+      if (Err) {
+        wu.Dest->L.reset();
+      }
+    };
+
+    switch (wu.Type) {
+    case Workunit::LoadAndLink: {
+      auto M = loadInputFile(argv0, *wu.DestContext, wu.InputFile);
+      if (!M) {
+        wu.Dest->L.reset();
+        break;
+      }
+      link(std::move(M));
+      break;
+    }
+    case Workunit::LinkModules: {
+      auto &SrcModule = wu.SrcWorkunit->Dest->Composite;
+      link(std::move(SrcModule));
+      break;
+    }
+    }
+
+    std::unique_lock<std::mutex> lock(wu.CondLock);
+    wu.Done = true;
+    wu.Cond.notify_all();
+  }
+}
+
+static LLVMContext *newContext() {
+  LLVMContext *ctx = new LLVMContext;
+  ctx->setDiagnosticHandler(
+    std::make_unique<LLVMLinkDiagnosticHandler>(), true);
+  if (!DisableDITypeMap)
+    ctx->enableDebugTypeODRUniquing();
+  return ctx;
+}
+
 int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   ExitOnErr.setBanner(std::string(argv[0]) + ": ");
 
-  LLVMContext Context;
-  Context.setDiagnosticHandler(
-    std::make_unique<LLVMLinkDiagnosticHandler>(), true);
   cl::ParseCommandLineOptions(argc, argv, "llvm linker\n");
-
-  if (!DisableDITypeMap)
-    Context.enableDebugTypeODRUniquing();
-
-  auto Composite = std::make_unique<Module>("llvm-link", Context);
-  Linker L(*Composite);
+  argv0 = argv[0];
 
   unsigned Flags = Linker::Flags::None;
   if (OnlyNeeded)
     Flags |= Linker::Flags::LinkOnlyNeeded;
 
-  // First add all the regular input files
-  if (!linkFiles(argv[0], Context, L, InputFilenames, Flags))
+  ThreadPoolStrategy S = hardware_concurrency(NumThreads);
+  if (NumThreads == 0) {
+    // If NumThreads is not specified, create one thread for each input, up to
+    // the number of hardware cores.
+    S = heavyweight_hardware_concurrency(InputFilenames.size());
+    S.Limit = true;
+  }
+  ThreadPool Pool(S);
+
+  // Construct work units depending on the settings.
+
+  std::vector<std::vector<std::unique_ptr<Workunit>>> WorkunitsByThread(Pool.getThreadCount());
+  std::vector<PerThreadData> ThreadData(Pool.getThreadCount());
+
+  for (unsigned thread = 0; thread != Pool.getThreadCount(); ++thread) {
+    auto &data = ThreadData[thread];
+    data.Composite = std::make_unique<Module>("llvm-link", *newContext());
+    data.L = std::make_unique<Linker>(*data.Composite);
+  }
+
+  // Files are loaded and then linked within their thread.
+  unsigned thread = 0;
+  bool first_link = true;
+  for (auto &File : InputFilenames) {
+    auto wu = std::make_unique<Workunit>();
+    wu->Type = Workunit::LoadAndLink;
+    wu->DestContext = ContextEachInput ? nullptr : &ThreadData[thread].Composite->getContext();
+    wu->InputFile = File;
+    wu->Dest = &ThreadData[thread];
+    wu->Flags = first_link ? Flags & Linker::Flags::OverrideFromSrc : Flags;
+    wu->Internalize = !first_link && Internalize;
+
+    WorkunitsByThread[thread].push_back(std::move(wu));
+
+    ++thread;
+    if (thread == Pool.getThreadCount()) {
+      first_link = false;
+      thread = 0;
+    }
+  }
+
+  // Finally, we need to fold them into one. We merge them pairwise forming a
+  // tree that resembles a sporting tournament where the winner (Dest) goes on
+  // to the next round. The algorithm is:
+  // * Take each pair of modules and fold the the second into the first
+  //   (link #1 into #0, link #3 into #2, etc).
+  // * Remove #1, #3, etc. because those are no longer needed, renumbering
+  //   the ones that follow it, #2 -> #1, #4 -> #2, etc.)
+  // * Repeat until there is only one left.
+  // As an optimization we don't renumber them, instead we skip over the
+  // modules that have already been used as link sources when forming pairs.
+  for (unsigned depth = 1; depth < Pool.getThreadCount(); depth <<= 1) {
+    for (unsigned i = depth; i < Pool.getThreadCount(); i += depth) {
+      auto wu = std::make_unique<Workunit>();
+      wu->Type = Workunit::LinkModules;
+      wu->Dest = &ThreadData[i - depth];
+      wu->DestWorkunit = WorkunitsByThread[i - depth].back().get();
+      wu->SrcWorkunit = WorkunitsByThread[i].back().get();
+      wu->Flags = Flags;
+      wu->Internalize = Internalize;
+      WorkunitsByThread[i - depth].push_back(std::move(wu));
+    }
+  }
+
+  for (std::vector<std::unique_ptr<Workunit>> &WorkForThread : WorkunitsByThread) {
+    Pool.async(&executeWorkunits, &WorkForThread);
+  }
+  Pool.wait();
+
+  if (!ThreadData[0].L)
     return 1;
+
+  auto Composite = std::move(ThreadData[0].Composite);
+  auto &Context = Composite->getContext();
+  Linker &L = *ThreadData[0].L;
 
   // Next the -override ones.
   if (!linkFiles(argv[0], Context, L, OverridingInputs,
