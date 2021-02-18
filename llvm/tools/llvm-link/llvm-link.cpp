@@ -458,6 +458,27 @@ static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
   return true;
 }
 
+static bool LinkAcrossContext(Linker *L, LLVMContext &LContext,
+                              std::unique_ptr<Module> Src,
+                              unsigned Flags = Linker::Flags::None,
+                              std::function<void(Module &, const StringSet<> &)>
+                                  InternalizeCallback = {}) {
+  if (&Src->getContext() == &LContext)
+    return L->linkInModule(std::move(Src), Flags, InternalizeCallback);
+
+  std::string Buf;
+  {
+    raw_string_ostream OS(Buf);
+    ExitOnErr(Src->materializeAll());
+    WriteBitcodeToFile(*Src, OS);
+  }
+  auto MemBuf = MemoryBuffer::getMemBuffer(Buf);
+  SMDiagnostic Err;
+  auto M = parseIR(*MemBuf, Err, LContext);
+  M->setModuleIdentifier(Src->getModuleIdentifier());
+  return L->linkInModule(std::move(M), Flags, InternalizeCallback);
+}
+
 struct PerThreadData {
   std::unique_ptr<Module> Composite;
   std::mutex LLock;
@@ -535,16 +556,35 @@ executeWorkunits(std::vector<std::unique_ptr<Workunit>> *Workunits) {
       if (!wu.Dest->L)
         return;
 
+      bool AcrossContext =
+          &wu.Dest->Composite->getContext() != &M->getContext();
+
       bool Err;
       if (wu.Internalize) {
-        Err = wu.Dest->L->linkInModule(
-            std::move(M), wu.Flags, [](Module &M, const StringSet<> &GVS) {
-              internalizeModule(M, [&GVS](const GlobalValue &GV) {
-                return !GV.hasName() || (GVS.count(GV.getName()) == 0);
+        if (AcrossContext) {
+          Err = LinkAcrossContext(
+              wu.Dest->L.get(), wu.Dest->Composite->getContext(), std::move(M),
+              wu.Flags, [](Module &M, const StringSet<> &GVS) {
+                internalizeModule(M, [&GVS](const GlobalValue &GV) {
+                  return !GV.hasName() || (GVS.count(GV.getName()) == 0);
+                });
               });
-            });
+        } else {
+          Err = wu.Dest->L->linkInModule(
+              std::move(M), wu.Flags, [](Module &M, const StringSet<> &GVS) {
+                internalizeModule(M, [&GVS](const GlobalValue &GV) {
+                  return !GV.hasName() || (GVS.count(GV.getName()) == 0);
+                });
+              });
+        }
       } else {
-        Err = wu.Dest->L->linkInModule(std::move(M), wu.Flags);
+        if (AcrossContext) {
+          Err = LinkAcrossContext(wu.Dest->L.get(),
+                                  wu.Dest->Composite->getContext(),
+                                  std::move(M), wu.Flags);
+        } else {
+          Err = wu.Dest->L->linkInModule(std::move(M), wu.Flags);
+        }
       }
       if (Err) {
         wu.Dest->L.reset();
