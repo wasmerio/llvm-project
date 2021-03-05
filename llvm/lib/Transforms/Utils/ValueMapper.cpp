@@ -120,6 +120,7 @@ class Mapper {
   SmallVector<WorklistEntry, 4> Worklist;
   SmallVector<DelayedBasicBlock, 1> DelayedBBs;
   SmallVector<Constant *, 16> AppendingInits;
+  SmallVector<StringRef, 8> SrcSSNs;
 
 public:
   Mapper(ValueToValueMapTy &VM, RemapFlags Flags,
@@ -512,11 +513,26 @@ Value *Mapper::mapValue(const Value *V) {
     return getVM()[V] = ConstantStruct::get(cast<StructType>(NewTy), Ops);
   if (isa<ConstantVector>(C))
     return getVM()[V] = ConstantVector::get(Ops);
+
+  // These appear to have no operands because they hold their data inline.
+  if (ConstantDataArray *CDA = dyn_cast<ConstantDataArray>(C))
+    return getVM()[V] = ConstantDataArray::getRaw(
+               CDA->getRawDataValues(), CDA->getNumElements(),
+               cast<ArrayType>(NewTy)->getElementType());
+  if (ConstantDataVector *CDV = dyn_cast<ConstantDataVector>(C))
+    return getVM()[V] = ConstantDataVector::getRaw(
+               CDV->getRawDataValues(), CDV->getNumElements(),
+               cast<VectorType>(NewTy)->getElementType());
+
   // If this is a no-operand constant, it must be because the type was remapped.
   if (isa<UndefValue>(C))
     return getVM()[V] = UndefValue::get(NewTy);
   if (isa<ConstantAggregateZero>(C))
     return getVM()[V] = ConstantAggregateZero::get(NewTy);
+  if (ConstantInt *CI = dyn_cast<ConstantInt>(C))
+    return getVM()[V] = ConstantInt::get(NewTy, CI->getValue());
+  if (ConstantFP *CFP = dyn_cast<ConstantFP>(C))
+    return getVM()[V] = ConstantFP::get(NewTy, CFP->getValue());
   assert(isa<ConstantPointerNull>(C));
   return getVM()[V] = ConstantPointerNull::get(cast<PointerType>(NewTy));
 }
@@ -941,7 +957,8 @@ void Mapper::remapInstruction(Instruction *I) {
     CB->mutateFunctionType(FunctionType::get(
         TypeMapper->remapType(I->getType()), Tys, FTy->isVarArg()));
 
-    LLVMContext &C = CB->getContext();
+    // TODO: verify the below change is necessary
+    LLVMContext &C = CB->getFunctionType()->getContext();
     AttributeList Attrs = CB->getAttributes();
     for (unsigned i = 0; i < Attrs.getNumAttrSets(); ++i) {
       for (Attribute::AttrKind TypedAttr :
@@ -965,7 +982,37 @@ void Mapper::remapInstruction(Instruction *I) {
     GEP->setResultElementType(
         TypeMapper->remapType(GEP->getResultElementType()));
   }
+
+  // TODO: only needed if linking across contexts
+  SyncScope::ID SSID = SyncScope::System;
+  if (auto *FI = dyn_cast<FenceInst>(I)) {
+    SSID = FI->getSyncScopeID();
+  } else if (auto *LI = dyn_cast<LoadInst>(I)) {
+    SSID = LI->getSyncScopeID();
+  } else if (auto *SI = dyn_cast<StoreInst>(I)) {
+    SSID = SI->getSyncScopeID();
+  } else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
+    SSID = AI->getSyncScopeID();
+  }
+  StringRef SSN;
+  if (SSID != SyncScope::System) {
+    if (SrcSSNs.empty())
+      I->getContext().getSyncScopeNames(SrcSSNs);
+    SSN = SrcSSNs[SSID];
+  }
   I->mutateType(TypeMapper->remapType(I->getType()));
+  if (SSID != SyncScope::System) {
+    auto NewSSID = I->getContext().getOrInsertSyncScopeID(SSN);
+    if (auto *FI = dyn_cast<FenceInst>(I)) {
+      FI->setSyncScopeID(NewSSID);
+    } else if (auto *LI = dyn_cast<LoadInst>(I)) {
+      LI->setSyncScopeID(NewSSID);
+    } else if (auto *SI = dyn_cast<StoreInst>(I)) {
+      SI->setSyncScopeID(NewSSID);
+    } else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
+      AI->setSyncScopeID(NewSSID);
+    }
+  }
 }
 
 void Mapper::remapGlobalObjectMetadata(GlobalObject &GO) {
@@ -987,13 +1034,27 @@ void Mapper::remapFunction(Function &F) {
 
   // Remap the argument types.
   if (TypeMapper)
-    for (Argument &A : F.args())
+    for (Argument &A : F.args()) {
+      std::string Name = A.getName().str();
+      A.setName("");
       A.mutateType(TypeMapper->remapType(A.getType()));
+      A.setName(Name);
+    }
 
   // Remap the instructions.
-  for (BasicBlock &BB : F)
-    for (Instruction &I : BB)
+  for (BasicBlock &BB : F) {
+    for (Instruction &I : BB) {
+      std::string Name = I.getName().str();
+      I.setName("");
       remapInstruction(&I);
+      I.setName(Name);
+    }
+    // If linking across contexts.
+    std::string Name = BB.getName().str();
+    BB.setName("");
+    BB.mutateType(TypeMapper->remapType(BB.getType()));
+    BB.setName(Name);
+  }
 }
 
 void Mapper::mapAppendingVariable(GlobalVariable &GV, Constant *InitPrefix,

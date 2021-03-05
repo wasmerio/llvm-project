@@ -1,9 +1,9 @@
 ; This one fails because the LLVM runtime is allowing two null pointers of
 ; the same type to be created!
 
-; RUN: echo "%%T = type i32" | llvm-as > %t.2.bc
-; RUN: llvm-as %s -o %t.1.bc
-; RUN: llvm-link %t.1.bc %t.2.bc
+; RUN: echo "%%T = type i32" > %t.2.ll
+; RUN: llvm-link %s %t.2.ll
+; RUN: llvm-link --context-each-input %s %t.2.ll
 
 %T = type opaque
 

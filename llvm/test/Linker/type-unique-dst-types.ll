@@ -4,6 +4,13 @@
 ; RUN: cat %t1.ll | FileCheck %s
 ; RUN: cat %t1.ll | FileCheck --check-prefix=RENAMED %s
 
+; RUN: llvm-link --context-each-input \
+; RUN:           %p/type-unique-dst-types.ll \
+; RUN:           %p/Inputs/type-unique-dst-types2.ll \
+; RUN:           %p/Inputs/type-unique-dst-types3.ll -S -o %t1.ll
+; RUN: cat %t1.ll | FileCheck %s
+; RUN: cat %t1.ll | FileCheck --check-prefix=RENAMED %s
+
 ; This tests the importance of keeping track of which types are part of the
 ; destination module.
 ; When the second input is merged in, the context gets an unused A.11. When

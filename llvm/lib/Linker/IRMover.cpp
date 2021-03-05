@@ -29,6 +29,9 @@ using namespace llvm;
 
 namespace {
 class TypeMapTy : public ValueMapTypeRemapper {
+  /// Dest LLVMContext
+  LLVMContext &Context;
+
   /// This is a mapping from a source type to a destination type to use.
   DenseMap<Type *, Type *> MappedTypes;
 
@@ -48,8 +51,8 @@ class TypeMapTy : public ValueMapTypeRemapper {
   SmallPtrSet<StructType *, 16> DstResolvedOpaqueTypes;
 
 public:
-  TypeMapTy(IRMover::IdentifiedStructTypeSet &DstStructTypesSet)
-      : DstStructTypesSet(DstStructTypesSet) {}
+  TypeMapTy(LLVMContext &Context, IRMover::IdentifiedStructTypeSet &DstStructTypesSet)
+      : Context(Context), DstStructTypesSet(DstStructTypesSet) {}
 
   IRMover::IdentifiedStructTypeSet &DstStructTypesSet;
   /// Indicate that the specified type in the destination module is conceptually
@@ -113,6 +116,8 @@ void TypeMapTy::addTypeMapping(Type *DstTy, Type *SrcTy) {
 /// Recursively walk this pair of types, returning true if they are isomorphic,
 /// false if they are not.
 bool TypeMapTy::areTypesIsomorphic(Type *DstTy, Type *SrcTy) {
+  assert(&DstTy->getContext() == &Context);
+
   // Two types with differing kinds are clearly not isomorphic.
   if (DstTy->getTypeID() != SrcTy->getTypeID())
     return false;
@@ -161,9 +166,10 @@ bool TypeMapTy::areTypesIsomorphic(Type *DstTy, Type *SrcTy) {
     return false;
 
   // Fail if any of the extra properties (e.g. array size) of the type disagree.
-  if (isa<IntegerType>(DstTy))
-    return false; // bitwidth disagrees.
-  if (PointerType *PT = dyn_cast<PointerType>(DstTy)) {
+  if (IntegerType *IT = dyn_cast<IntegerType>(DstTy)) {
+    if (IT->getBitWidth() != cast<IntegerType>(SrcTy)->getBitWidth())
+      return false;
+  } else if (PointerType *PT = dyn_cast<PointerType>(DstTy)) {
     if (PT->getAddressSpace() != cast<PointerType>(SrcTy)->getAddressSpace())
       return false;
   } else if (FunctionType *FT = dyn_cast<FunctionType>(DstTy)) {
@@ -251,7 +257,7 @@ Type *TypeMapTy::get(Type *Ty, SmallPtrSet<StructType *, 8> &Visited) {
 #endif
 
     if (!Visited.insert(cast<StructType>(Ty)).second) {
-      StructType *DTy = StructType::create(Ty->getContext());
+      StructType *DTy = StructType::create(Context);
       return *Entry = DTy;
     }
   }
@@ -262,8 +268,46 @@ Type *TypeMapTy::get(Type *Ty, SmallPtrSet<StructType *, 8> &Visited) {
 
   // If there are no element types to map, then the type is itself.  This is
   // true for the anonymous {} struct, things like 'float', integers, etc.
-  if (Ty->getNumContainedTypes() == 0 && IsUniqued)
-    return *Entry = Ty;
+  if (Ty->getNumContainedTypes() == 0 && IsUniqued) {
+    switch (Ty->getTypeID()) {
+    case Type::HalfTyID:
+      return *Entry = Type::getHalfTy(Context);
+    case Type::BFloatTyID:
+      return *Entry = Type::getBFloatTy(Context);
+    case Type::FloatTyID:
+      return *Entry = Type::getFloatTy(Context);
+    case Type::DoubleTyID:
+      return *Entry = Type::getDoubleTy(Context);
+    case Type::X86_FP80TyID:
+      return *Entry = Type::getX86_FP80Ty(Context);
+    case Type::PPC_FP128TyID:
+      return *Entry = Type::getPPC_FP128Ty(Context);
+    case Type::VoidTyID:
+      return *Entry = Type::getVoidTy(Context);
+    case Type::LabelTyID:
+      return *Entry = Type::getLabelTy(Context);
+    case Type::MetadataTyID:
+      return *Entry = Type::getMetadataTy(Context);
+    case Type::X86_MMXTyID:
+      return *Entry = Type::getX86_MMXTy(Context);
+    case Type::X86_AMXTyID:
+      return *Entry = Type::getX86_AMXTy(Context);
+    case Type::TokenTyID:
+      return *Entry = Type::getTokenTy(Context);
+    case Type::IntegerTyID:
+      return *Entry = IntegerType::get(Context,
+                                       cast<IntegerType>(Ty)->getBitWidth());
+    case Type::StructTyID: {
+      StructType *STy = cast<StructType>(Ty);
+      assert(STy->getNumElements() == 0 &&
+             "struct type with no contained types has elements");
+      assert(!STy->hasName() && "expected a literal struct");
+      return StructType::get(Context, {}, STy->isPacked());
+    }
+    default:
+      llvm_unreachable("unknown zero-element type to remap");
+    }
+  }
 
   // Remap all of the elements, keeping track of whether any of them change.
   bool AnyChange = false;
@@ -272,6 +316,7 @@ Type *TypeMapTy::get(Type *Ty, SmallPtrSet<StructType *, 8> &Visited) {
     ElementTypes[I] = get(Ty->getContainedType(I), Visited);
     AnyChange |= ElementTypes[I] != Ty->getContainedType(I);
   }
+  AnyChange |= &Ty->getContext() != &Context;
 
   // If we found our type while recursively processing stuff, just use it.
   Entry = &MappedTypes[Ty];
@@ -312,12 +357,19 @@ Type *TypeMapTy::get(Type *Ty, SmallPtrSet<StructType *, 8> &Visited) {
     auto *STy = cast<StructType>(Ty);
     bool IsPacked = STy->isPacked();
     if (IsUniqued)
-      return *Entry = StructType::get(Ty->getContext(), ElementTypes, IsPacked);
+      return *Entry = StructType::get(Context, ElementTypes, IsPacked);
 
     // If the type is opaque, we can just use it directly.
     if (STy->isOpaque()) {
-      DstStructTypesSet.addOpaque(STy);
-      return *Entry = Ty;
+      if (&STy->getContext() == &Context) {
+        DstStructTypesSet.addOpaque(STy);
+        return *Entry = Ty;
+      }
+      StructType *OpaqueTy = StructType::create(Context);
+      if (STy->hasName())
+        OpaqueTy->setName(STy->getName());
+      DstStructTypesSet.addOpaque(OpaqueTy);
+      return *Entry = OpaqueTy;
     }
 
     if (StructType *OldT =
@@ -331,7 +383,7 @@ Type *TypeMapTy::get(Type *Ty, SmallPtrSet<StructType *, 8> &Visited) {
       return *Entry = Ty;
     }
 
-    StructType *DTy = StructType::create(Ty->getContext());
+    StructType *DTy = StructType::create(Context);
     finishType(DTy, STy, ElementTypes);
     return *Entry = DTy;
   }
@@ -525,7 +577,7 @@ public:
            std::function<void(GlobalValue &, IRMover::ValueAdder)> AddLazyFor,
            bool IsPerformingImport)
       : DstM(DstM), SrcM(std::move(SrcM)), AddLazyFor(std::move(AddLazyFor)),
-        TypeMap(Set), GValMaterializer(*this), LValMaterializer(*this),
+        TypeMap(DstM.getContext(), Set), GValMaterializer(*this), LValMaterializer(*this),
         SharedMDs(SharedMDs), IsPerformingImport(IsPerformingImport),
         Mapper(ValueMap, RF_ReuseAndMutateDistinctMDs | RF_IgnoreMissingLocals,
                &TypeMap, &GValMaterializer),
@@ -753,7 +805,7 @@ static StringRef getTypeNamePrefix(StringRef Name) {
 /// types 'Foo' but one got renamed when the module was loaded into the same
 /// LLVMContext.
 void IRLinker::computeTypeMapping() {
-  for (GlobalValue &SGV : SrcM->globals()) {
+  for (GlobalVariable &SGV : SrcM->globals()) {
     GlobalValue *DGV = getLinkedToGlobal(&SGV);
     if (!DGV)
       continue;
@@ -769,7 +821,7 @@ void IRLinker::computeTypeMapping() {
     TypeMap.addTypeMapping(DAT->getElementType(), SAT->getElementType());
   }
 
-  for (GlobalValue &SGV : *SrcM)
+  for (Function &SGV : *SrcM)
     if (GlobalValue *DGV = getLinkedToGlobal(&SGV)) {
       if (DGV->getType() == SGV.getType()) {
         // If the types of DGV and SGV are the same, it means that DGV is from
@@ -783,7 +835,7 @@ void IRLinker::computeTypeMapping() {
       TypeMap.addTypeMapping(DGV->getType(), SGV.getType());
     }
 
-  for (GlobalValue &SGV : SrcM->aliases())
+  for (GlobalAlias &SGV : SrcM->aliases())
     if (GlobalValue *DGV = getLinkedToGlobal(&SGV))
       TypeMap.addTypeMapping(DGV->getType(), SGV.getType());
 
@@ -805,11 +857,13 @@ void IRLinker::computeTypeMapping() {
     }
 
     auto STTypePrefix = getTypeNamePrefix(ST->getName());
-    if (STTypePrefix.size() == ST->getName().size())
-      continue;
+    if (&ST->getContext() == &DstM.getContext()) {
+      if (STTypePrefix.size() == ST->getName().size())
+        continue;
+    }
 
     // Check to see if the destination module has a struct with the prefix name.
-    StructType *DST = StructType::getTypeByName(ST->getContext(), STTypePrefix);
+    StructType *DST = StructType::getTypeByName(DstM.getContext(), STTypePrefix);
     if (!DST)
       continue;
 
@@ -1451,7 +1505,7 @@ Error IRLinker::run() {
 
   Triple SrcTriple(SrcM->getTargetTriple()), DstTriple(DstM.getTargetTriple());
 
-  if (!SrcM->getTargetTriple().empty()&&
+  if (!SrcM->getTargetTriple().empty() &&
       !SrcTriple.isCompatibleWith(DstTriple))
     emitWarning("Linking two modules of different target triples: '" +
                 SrcM->getModuleIdentifier() + "' is '" +
