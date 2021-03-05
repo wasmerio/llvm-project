@@ -1,4 +1,5 @@
 ; RUN: llvm-link %S/Inputs/syncscope-1.ll %S/Inputs/syncscope-2.ll -S | FileCheck %s
+; RUN: llvm-link --context-each-input %S/Inputs/syncscope-1.ll %S/Inputs/syncscope-2.ll -S | FileCheck %s
 
 ; CHECK-LABEL: define void @syncscope_1
 ; CHECK: fence syncscope("agent") seq_cst

@@ -1,6 +1,5 @@
-; RUN: llvm-as %s -o %t1.bc
-; RUN: llvm-as < %p/2004-05-07-TypeResolution2.ll -o %t2.bc
-; RUN: llvm-link -o %t3.bc %t1.bc %t2.bc
+; RUN: llvm-link %s %p/2004-05-07-TypeResolution2.ll
+; RUN: llvm-link --context-each-input %s %p/2004-05-07-TypeResolution2.ll
 
 target datalayout = "e-p:32:32"
 	%myint = type opaque

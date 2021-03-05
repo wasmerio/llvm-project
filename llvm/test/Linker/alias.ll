@@ -1,5 +1,7 @@
 ; RUN: llvm-link %s %S/Inputs/alias.ll -S -o - | FileCheck --check-prefix=C1 %s
 ; RUN: llvm-link %S/Inputs/alias.ll %s -S -o - | FileCheck --check-prefix=C2 %s
+; RUN: llvm-link --context-each-input %s %S/Inputs/alias.ll -S -o - | FileCheck --check-prefix=C1 %s
+; RUN: llvm-link --context-each-input %S/Inputs/alias.ll %s -S -o - | FileCheck --check-prefix=C2 %s
 
 ; FIXME:
 ; The C1 direction is incorrect.

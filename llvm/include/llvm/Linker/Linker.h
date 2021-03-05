@@ -29,6 +29,7 @@ public:
     None = 0,
     OverrideFromSrc = (1 << 0),
     LinkOnlyNeeded = (1 << 1),
+    LinkAcrossContexts = (1 << 2),
   };
 
   Linker(Module &M);

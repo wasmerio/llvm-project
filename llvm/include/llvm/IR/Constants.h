@@ -782,6 +782,17 @@ public:
   static Constant *getFP(Type *ElementType, ArrayRef<uint32_t> Elts);
   static Constant *getFP(Type *ElementType, ArrayRef<uint64_t> Elts);
 
+  /// get() constructor - Return a constant with vector type with an element
+  /// count and element type matching the NumElements and ElementTy parameters
+  /// passed in. Note that this can return a ConstantAggregateZero object.
+  /// ElementTy must be one of i8/i16/i32/i64/float/double. Data is the
+  /// buffer containing the elements. Be careful to make sure Data uses the
+  /// right endianness, the buffer will be used as-is.
+  static Constant *getRaw(StringRef Data, uint64_t NumElements, Type *ElementTy) {
+    Type *Ty = VectorType::get(ElementTy, ElementCount::getFixed(NumElements));
+    return getImpl(Data, Ty);
+  }
+
   /// Return a ConstantVector with the specified constant in each element.
   /// The specified constant has to be a of a compatible type (i8/i16/
   /// i32/i64/float/double) and must be a ConstantFP or ConstantInt.
