@@ -1,6 +1,5 @@
-; RUN: llvm-as < %s > %t.bc
-; RUN: llvm-as < %p/2009-09-03-mdnode2.ll > %t2.bc
-; RUN: llvm-link %t.bc %t2.bc
+; RUN: llvm-link %s %p/2009-09-03-mdnode2.ll
+; RUN: llvm-link --context-each-input %s %p/2009-09-03-mdnode2.ll
 
 declare void @f() nounwind
 

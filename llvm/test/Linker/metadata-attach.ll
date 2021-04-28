@@ -1,6 +1,9 @@
 ; RUN: llvm-link %s -S -o - | FileCheck %s
 ; RUN: llvm-link %s %S/Inputs/metadata-attach.ll -S -o - | FileCheck --check-prefix=CHECK-LINKED1 %s
 ; RUN: llvm-link %S/Inputs/metadata-attach.ll %s -S -o - | FileCheck --check-prefix=CHECK-LINKED2 %s
+; RUN: llvm-link --context-each-input %s -S -o - | FileCheck %s
+; RUN: llvm-link --context-each-input %s %S/Inputs/metadata-attach.ll -S -o - | FileCheck --check-prefix=CHECK-LINKED1 %s
+; RUN: llvm-link --context-each-input %S/Inputs/metadata-attach.ll %s -S -o - | FileCheck --check-prefix=CHECK-LINKED2 %s
 
 ; CHECK: @g1 = global i32 0, !attach !0{{$}}
 ; CHECK-LINKED1: @g1 = global i32 0, !attach !0{{$}}

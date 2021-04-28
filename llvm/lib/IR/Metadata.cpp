@@ -534,13 +534,13 @@ MDNode::MDNode(LLVMContext &Context, unsigned ID, StorageType Storage,
   countUnresolvedOperands();
 }
 
-TempMDNode MDNode::clone() const {
+TempMDNode MDNode::clone(LLVMContext *DestContext) const {
   switch (getMetadataID()) {
   default:
     llvm_unreachable("Invalid MDNode subclass");
 #define HANDLE_MDNODE_LEAF(CLASS)                                              \
   case CLASS##Kind:                                                            \
-    return cast<CLASS>(this)->cloneImpl();
+    return cast<CLASS>(this)->cloneImpl(DestContext);
 #include "llvm/IR/Metadata.def"
   }
 }

@@ -1430,7 +1430,9 @@ void Verifier::visitDIExpression(const DIExpression &N) {
 
 void Verifier::visitDIGlobalVariableExpression(
     const DIGlobalVariableExpression &GVE) {
-  AssertDI(GVE.getVariable(), "missing variable");
+  AssertDI(GVE.getRawVariable(), "missing variable");
+  AssertDI(isa<DIGlobalVariable>(GVE.getRawVariable()),
+           "invalid global variable ref");
   if (auto *Var = GVE.getVariable())
     visitDIGlobalVariable(*Var);
   if (auto *Expr = GVE.getExpression()) {
@@ -1895,13 +1897,13 @@ void Verifier::verifyFunctionAttrs(FunctionType *FT, AttributeList Attrs,
 
   if (AttributeListsVisited.insert(Attrs.getRawPointer()).second) {
     Assert(Attrs.hasParentContext(Context),
-           "Attribute list does not match Module context!", &Attrs);
+           "Attribute list does not match Module context!", &Attrs, V);
     for (const auto &AttrSet : Attrs) {
       Assert(!AttrSet.hasAttributes() || AttrSet.hasParentContext(Context),
-             "Attribute set does not match Module context!", &AttrSet);
+             "Attribute set does not match Module context!", &AttrSet, V);
       for (const auto &A : AttrSet) {
         Assert(A.hasParentContext(Context),
-               "Attribute does not match Module context!", &A);
+               "Attribute does not match Module context!", &A, V);
       }
     }
   }
@@ -3344,6 +3346,14 @@ void Verifier::visitCallBase(CallBase &Call) {
   // Verify that each inlinable callsite of a debug-info-bearing function in a
   // debug-info-bearing function has a debug location attached to it. Failure to
   // do so causes assertion failures when the inliner sets up inline scope info.
+  auto SubprogramDbgValid = [](GlobalObject *G) -> bool {
+    if (auto Node = G->getMetadata(LLVMContext::MD_dbg))
+      return isa<DISubprogram>(Node);
+    return true;
+  };
+  AssertDI(SubprogramDbgValid(Call.getFunction()), "invalid !dbg on function", Call);
+  if (auto Called = Call.getCalledFunction())
+    AssertDI(SubprogramDbgValid(Called), "invalid !dbg on called function", Call);
   if (Call.getFunction()->getSubprogram() && Call.getCalledFunction() &&
       Call.getCalledFunction()->getSubprogram())
     AssertDI(Call.getDebugLoc(),

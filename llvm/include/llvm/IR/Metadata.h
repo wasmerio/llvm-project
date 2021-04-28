@@ -946,7 +946,7 @@ public:
                                          ArrayRef<Metadata *> MDs);
 
   /// Create a (temporary) clone of this.
-  TempMDNode clone() const;
+  TempMDNode clone(LLVMContext *DestContext = nullptr) const;
 
   /// Deallocate a node created by getTemporary.
   ///
@@ -1154,8 +1154,8 @@ class MDTuple : public MDNode {
   static MDTuple *getImpl(LLVMContext &Context, ArrayRef<Metadata *> MDs,
                           StorageType Storage, bool ShouldCreate = true);
 
-  TempMDTuple cloneImpl() const {
-    return getTemporary(getContext(), SmallVector<Metadata *, 4>(operands()));
+  TempMDTuple cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), SmallVector<Metadata *, 4>(operands()));
   }
 
 public:
@@ -1188,7 +1188,7 @@ public:
   }
 
   /// Return a (temporary) clone of this.
-  TempMDTuple clone() const { return cloneImpl(); }
+  TempMDTuple clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDTupleKind;

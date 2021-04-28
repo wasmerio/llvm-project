@@ -579,8 +579,9 @@ public:
       : DstM(DstM), SrcM(std::move(SrcM)), AddLazyFor(std::move(AddLazyFor)),
         TypeMap(DstM.getContext(), Set), GValMaterializer(*this), LValMaterializer(*this),
         SharedMDs(SharedMDs), IsPerformingImport(IsPerformingImport),
-        Mapper(ValueMap, RF_ReuseAndMutateDistinctMDs | RF_IgnoreMissingLocals,
-               &TypeMap, &GValMaterializer),
+        Mapper(ValueMap, (&DstM.getContext() == &this->SrcM->getContext() ? RF_ReuseAndMutateDistinctMDs : RF_LinkAcrossContexts) | RF_IgnoreMissingLocals,
+               &TypeMap, &GValMaterializer, &this->SrcM->getContext(),
+               &DstM.getContext()),
         IndirectSymbolMCID(Mapper.registerAlternateMappingContext(
             IndirectSymbolValueMap, &LValMaterializer)) {
     ValueMap.getMDMap() = std::move(SharedMDs);
@@ -675,6 +676,8 @@ Value *IRLinker::materialize(Value *V, bool ForIndirectSymbol) {
 
   if (ForIndirectSymbol || shouldLink(New, *SGV))
     setError(linkGlobalValueBody(*New, *SGV));
+  else if (auto *NewGV = dyn_cast<GlobalVariable>(New))
+    Mapper.scheduleRemapGlobalObjectMetadata(*NewGV);
 
   return New;
 }
@@ -696,22 +699,6 @@ GlobalVariable *IRLinker::copyGlobalVariableProto(const GlobalVariable *SGVar) {
   return NewDGV;
 }
 
-AttributeList IRLinker::mapAttributeTypes(LLVMContext &C, AttributeList Attrs) {
-  for (unsigned i = 0; i < Attrs.getNumAttrSets(); ++i) {
-    for (Attribute::AttrKind TypedAttr :
-         {Attribute::ByVal, Attribute::StructRet, Attribute::ByRef,
-          Attribute::InAlloca}) {
-      if (Attrs.hasAttribute(i, TypedAttr)) {
-        if (Type *Ty = Attrs.getAttribute(i, TypedAttr).getValueAsType()) {
-          Attrs = Attrs.replaceAttributeType(C, i, TypedAttr, TypeMap.get(Ty));
-          break;
-        }
-      }
-    }
-  }
-  return Attrs;
-}
-
 /// Link the function in the source module into the destination module if
 /// needed, setting up mapping information.
 Function *IRLinker::copyFunctionProto(const Function *SF) {
@@ -721,7 +708,9 @@ Function *IRLinker::copyFunctionProto(const Function *SF) {
                              GlobalValue::ExternalLinkage,
                              SF->getAddressSpace(), SF->getName(), &DstM);
   F->copyAttributesFrom(SF);
-  F->setAttributes(mapAttributeTypes(F->getContext(), F->getAttributes()));
+  F->setAttributes(Mapper.mapAttributeList(F->getAttributes()));
+  if (&DstM.getContext() != &this->SrcM->getContext())
+    Mapper.scheduleRemapFunction(*F);
   return F;
 }
 
@@ -1077,12 +1066,13 @@ Expected<Constant *> IRLinker::linkGlobalValueProto(GlobalValue *SGV,
   // Overloaded intrinsics have overloaded types names as part of their
   // names. If we renamed overloaded types we should rename the intrinsic
   // as well.
-  if (Function *F = dyn_cast<Function>(NewGV))
+  if (Function *F = dyn_cast<Function>(NewGV)) {
     if (auto Remangled = Intrinsic::remangleIntrinsicFunction(F)) {
       NewGV->eraseFromParent();
       NewGV = Remangled.getValue();
       NeedsRenaming = false;
     }
+  }
 
   if (NeedsRenaming)
     forceRenaming(NewGV, SGV->getName());
@@ -1155,8 +1145,10 @@ Error IRLinker::linkFunctionBody(Function &Dst, Function &Src) {
   Dst.stealArgumentListFrom(Src);
   Dst.getBasicBlockList().splice(Dst.end(), Src.getBasicBlockList());
 
-  // Everything has been moved over.  Remap it.
-  Mapper.scheduleRemapFunction(Dst);
+  // Everything has been moved over.  Remap it.  In LinkAcrossContext mode, all
+  // functions undergo remapping, including declarations.  Don't reschedule it.
+  if (&DstM.getContext() == &this->SrcM->getContext())
+    Mapper.scheduleRemapFunction(Dst);
   return Error::success();
 }
 
@@ -1278,8 +1270,9 @@ Error IRLinker::linkModuleFlagsMetadata() {
   // over the source module's flags.
   NamedMDNode *DstModFlags = DstM.getOrInsertModuleFlagsMetadata();
   if (DstModFlags->getNumOperands() == 0) {
-    for (unsigned I = 0, E = SrcModFlags->getNumOperands(); I != E; ++I)
-      DstModFlags->addOperand(SrcModFlags->getOperand(I));
+    for (unsigned I = 0, E = SrcModFlags->getNumOperands(); I != E; ++I) {
+      DstModFlags->addOperand(Mapper.mapMDNode(*SrcModFlags->getOperand(I)));
+    }
 
     return Error::success();
   }
@@ -1302,7 +1295,7 @@ Error IRLinker::linkModuleFlagsMetadata() {
   // Merge in the flags from the source module, and also collect its set of
   // requirements.
   for (unsigned I = 0, E = SrcModFlags->getNumOperands(); I != E; ++I) {
-    MDNode *SrcOp = SrcModFlags->getOperand(I);
+    MDNode *SrcOp = Mapper.mapMDNode(*SrcModFlags->getOperand(I));
     ConstantInt *SrcBehavior =
         mdconst::extract<ConstantInt>(SrcOp->getOperand(0));
     MDString *ID = cast<MDString>(SrcOp->getOperand(1));

@@ -1,4 +1,5 @@
 ; RUN: llvm-link %s %p/module-flags-1-b.ll -S -o - | sort | FileCheck %s
+; RUN: llvm-link --context-each-input %s %p/module-flags-1-b.ll -S -o - | sort | FileCheck %s
 
 ; Test basic functionality of module flags.
 

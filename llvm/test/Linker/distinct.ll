@@ -1,4 +1,5 @@
 ; RUN: llvm-link %s %S/Inputs/distinct.ll -o - -S | FileCheck %s
+; RUN: llvm-link --context-each-input %s %S/Inputs/distinct.ll -o - -S | FileCheck %s
 
 ; Test that distinct nodes from other modules remain distinct.  The @global
 ; cases are the most interesting, since the operands actually need to be
