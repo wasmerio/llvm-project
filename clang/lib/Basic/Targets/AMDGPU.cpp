@@ -18,7 +18,6 @@
 #include "clang/Basic/TargetBuiltins.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Frontend/OpenMP/OMPGridValues.h"
-#include "llvm/IR/DataLayout.h"
 
 using namespace clang;
 using namespace clang::targets;
@@ -51,6 +50,9 @@ const LangASMap AMDGPUTargetInfo::AMDGPUDefIsGenMap = {
     Global,   // cuda_device
     Constant, // cuda_constant
     Local,    // cuda_shared
+    Global,   // sycl_global
+    Local,    // sycl_local
+    Private,  // sycl_private
     Generic,  // ptr32_sptr
     Generic,  // ptr32_uptr
     Generic   // ptr64
@@ -68,6 +70,10 @@ const LangASMap AMDGPUTargetInfo::AMDGPUDefIsPrivMap = {
     Global,   // cuda_device
     Constant, // cuda_constant
     Local,    // cuda_shared
+    // SYCL address space values for this map are dummy
+    Generic,  // sycl_global
+    Generic,  // sycl_local
+    Generic,  // sycl_private
     Generic,  // ptr32_sptr
     Generic,  // ptr32_uptr
     Generic   // ptr64
@@ -183,6 +189,7 @@ bool AMDGPUTargetInfo::initFeatureMap(
       Features["dot2-insts"] = true;
       Features["dot5-insts"] = true;
       Features["dot6-insts"] = true;
+      Features["dot7-insts"] = true;
       Features["dl-insts"] = true;
       Features["flat-address-space"] = true;
       Features["16-bit-insts"] = true;
@@ -200,6 +207,7 @@ bool AMDGPUTargetInfo::initFeatureMap(
       Features["dot2-insts"] = true;
       Features["dot5-insts"] = true;
       Features["dot6-insts"] = true;
+      Features["dot7-insts"] = true;
       LLVM_FALLTHROUGH;
     case GK_GFX1010:
       Features["dl-insts"] = true;
@@ -227,6 +235,7 @@ bool AMDGPUTargetInfo::initFeatureMap(
       Features["dl-insts"] = true;
       Features["dot1-insts"] = true;
       Features["dot2-insts"] = true;
+      Features["dot7-insts"] = true;
       LLVM_FALLTHROUGH;
     case GK_GFX90C:
     case GK_GFX909:
@@ -319,7 +328,6 @@ AMDGPUTargetInfo::AMDGPUTargetInfo(const llvm::Triple &Triple,
                   llvm::AMDGPU::getArchAttrR600(GPUKind)) {
   resetDataLayout(isAMDGCN(getTriple()) ? DataLayoutStringAMDGCN
                                         : DataLayoutStringR600);
-  assert(DataLayout->getAllocaAddrSpace() == Private);
   GridValues = llvm::omp::AMDGPUGpuGridValues;
 
   setAddressSpaceMap(Triple.getOS() == llvm::Triple::Mesa3D ||
@@ -332,7 +340,7 @@ AMDGPUTargetInfo::AMDGPUTargetInfo(const llvm::Triple &Triple,
   AllowAMDGPUUnsafeFPAtomics = Opts.AllowAMDGPUUnsafeFPAtomics;
 
   // Set pointer width and alignment for target address space 0.
-  PointerWidth = PointerAlign = DataLayout->getPointerSizeInBits();
+  PointerWidth = PointerAlign = getPointerWidthV(Generic);
   if (getMaxPointerWidth() == 64) {
     LongWidth = LongAlign = 64;
     SizeType = UnsignedLong;

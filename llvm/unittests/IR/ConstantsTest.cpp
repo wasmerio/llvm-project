@@ -418,45 +418,55 @@ static std::string getNameOfType(Type *T) {
 
 TEST(ConstantsTest, BuildConstantDataArrays) {
   LLVMContext Context;
-  std::unique_ptr<Module> M(new Module("MyModule", Context));
 
   for (Type *T : {Type::getInt8Ty(Context), Type::getInt16Ty(Context),
                   Type::getInt32Ty(Context), Type::getInt64Ty(Context)}) {
     ArrayType *ArrayTy = ArrayType::get(T, 2);
     Constant *Vals[] = {ConstantInt::get(T, 0), ConstantInt::get(T, 1)};
-    Constant *CDV = ConstantArray::get(ArrayTy, Vals);
-    ASSERT_TRUE(dyn_cast<ConstantDataArray>(CDV) != nullptr)
-        << " T = " << getNameOfType(T);
+    Constant *CA = ConstantArray::get(ArrayTy, Vals);
+    ASSERT_TRUE(isa<ConstantDataArray>(CA)) << " T = " << getNameOfType(T);
+    auto *CDA = cast<ConstantDataArray>(CA);
+    Constant *CA2 = ConstantDataArray::getRaw(
+        CDA->getRawDataValues(), CDA->getNumElements(), CDA->getElementType());
+    ASSERT_TRUE(CA == CA2) << " T = " << getNameOfType(T);
   }
 
-  for (Type *T : {Type::getHalfTy(Context), Type::getFloatTy(Context),
-                  Type::getDoubleTy(Context)}) {
+  for (Type *T : {Type::getHalfTy(Context), Type::getBFloatTy(Context),
+                  Type::getFloatTy(Context), Type::getDoubleTy(Context)}) {
     ArrayType *ArrayTy = ArrayType::get(T, 2);
     Constant *Vals[] = {ConstantFP::get(T, 0), ConstantFP::get(T, 1)};
-    Constant *CDV = ConstantArray::get(ArrayTy, Vals);
-    ASSERT_TRUE(dyn_cast<ConstantDataArray>(CDV) != nullptr)
-        << " T = " << getNameOfType(T);
+    Constant *CA = ConstantArray::get(ArrayTy, Vals);
+    ASSERT_TRUE(isa<ConstantDataArray>(CA)) << " T = " << getNameOfType(T);
+    auto *CDA = cast<ConstantDataArray>(CA);
+    Constant *CA2 = ConstantDataArray::getRaw(
+        CDA->getRawDataValues(), CDA->getNumElements(), CDA->getElementType());
+    ASSERT_TRUE(CA == CA2) << " T = " << getNameOfType(T);
   }
 }
 
 TEST(ConstantsTest, BuildConstantDataVectors) {
   LLVMContext Context;
-  std::unique_ptr<Module> M(new Module("MyModule", Context));
 
   for (Type *T : {Type::getInt8Ty(Context), Type::getInt16Ty(Context),
                   Type::getInt32Ty(Context), Type::getInt64Ty(Context)}) {
     Constant *Vals[] = {ConstantInt::get(T, 0), ConstantInt::get(T, 1)};
-    Constant *CDV = ConstantVector::get(Vals);
-    ASSERT_TRUE(dyn_cast<ConstantDataVector>(CDV) != nullptr)
-        << " T = " << getNameOfType(T);
+    Constant *CV = ConstantVector::get(Vals);
+    ASSERT_TRUE(isa<ConstantDataVector>(CV)) << " T = " << getNameOfType(T);
+    auto *CDV = cast<ConstantDataVector>(CV);
+    Constant *CV2 = ConstantDataVector::getRaw(
+        CDV->getRawDataValues(), CDV->getNumElements(), CDV->getElementType());
+    ASSERT_TRUE(CV == CV2) << " T = " << getNameOfType(T);
   }
 
-  for (Type *T : {Type::getHalfTy(Context), Type::getFloatTy(Context),
-                  Type::getDoubleTy(Context)}) {
+  for (Type *T : {Type::getHalfTy(Context), Type::getBFloatTy(Context),
+                  Type::getFloatTy(Context), Type::getDoubleTy(Context)}) {
     Constant *Vals[] = {ConstantFP::get(T, 0), ConstantFP::get(T, 1)};
-    Constant *CDV = ConstantVector::get(Vals);
-    ASSERT_TRUE(dyn_cast<ConstantDataVector>(CDV) != nullptr)
-        << " T = " << getNameOfType(T);
+    Constant *CV = ConstantVector::get(Vals);
+    ASSERT_TRUE(isa<ConstantDataVector>(CV)) << " T = " << getNameOfType(T);
+    auto *CDV = cast<ConstantDataVector>(CV);
+    Constant *CV2 = ConstantDataVector::getRaw(
+        CDV->getRawDataValues(), CDV->getNumElements(), CDV->getElementType());
+    ASSERT_TRUE(CV == CV2) << " T = " << getNameOfType(T);
   }
 }
 
@@ -630,16 +640,8 @@ TEST(ConstantsTest, isElementWiseEqual) {
 
   Type *Int32Ty = Type::getInt32Ty(Context);
   Constant *CU = UndefValue::get(Int32Ty);
-  Constant *CP = PoisonValue::get(Int32Ty);
   Constant *C1 = ConstantInt::get(Int32Ty, 1);
   Constant *C2 = ConstantInt::get(Int32Ty, 2);
-
-  Constant *CUU = ConstantVector::get({CU, CU});
-  Constant *CPP = ConstantVector::get({CP, CP});
-  Constant *CUP = ConstantVector::get({CU, CP});
-  EXPECT_EQ(CUU, UndefValue::get(CUU->getType()));
-  EXPECT_EQ(CPP, PoisonValue::get(CPP->getType()));
-  EXPECT_NE(CUP, UndefValue::get(CUP->getType()));
 
   Constant *C1211 = ConstantVector::get({C1, C2, C1, C1});
   Constant *C12U1 = ConstantVector::get({C1, C2, CU, C1});
@@ -680,6 +682,52 @@ TEST(ConstantsTest, isElementWiseEqual) {
   EXPECT_FALSE(CP00U0->isElementWiseEqual(CP0000));
   EXPECT_FALSE(CP0000->isElementWiseEqual(CP00U));
   EXPECT_FALSE(CP00U->isElementWiseEqual(CP00U0));
+}
+
+// Check that vector/aggregate constants correctly store undef and poison
+// elements.
+
+TEST(ConstantsTest, CheckElementWiseUndefPoison) {
+  LLVMContext Context;
+
+  Type *Int32Ty = Type::getInt32Ty(Context);
+  StructType *STy = StructType::get(Int32Ty, Int32Ty);
+  ArrayType *ATy = ArrayType::get(Int32Ty, 2);
+  Constant *CU = UndefValue::get(Int32Ty);
+  Constant *CP = PoisonValue::get(Int32Ty);
+
+  {
+    Constant *CUU = ConstantVector::get({CU, CU});
+    Constant *CPP = ConstantVector::get({CP, CP});
+    Constant *CUP = ConstantVector::get({CU, CP});
+    Constant *CPU = ConstantVector::get({CP, CU});
+    EXPECT_EQ(CUU, UndefValue::get(CUU->getType()));
+    EXPECT_EQ(CPP, PoisonValue::get(CPP->getType()));
+    EXPECT_NE(CUP, UndefValue::get(CUP->getType()));
+    EXPECT_NE(CPU, UndefValue::get(CPU->getType()));
+  }
+
+  {
+    Constant *CUU = ConstantStruct::get(STy, {CU, CU});
+    Constant *CPP = ConstantStruct::get(STy, {CP, CP});
+    Constant *CUP = ConstantStruct::get(STy, {CU, CP});
+    Constant *CPU = ConstantStruct::get(STy, {CP, CU});
+    EXPECT_EQ(CUU, UndefValue::get(CUU->getType()));
+    EXPECT_EQ(CPP, PoisonValue::get(CPP->getType()));
+    EXPECT_NE(CUP, UndefValue::get(CUP->getType()));
+    EXPECT_NE(CPU, UndefValue::get(CPU->getType()));
+  }
+
+  {
+    Constant *CUU = ConstantArray::get(ATy, {CU, CU});
+    Constant *CPP = ConstantArray::get(ATy, {CP, CP});
+    Constant *CUP = ConstantArray::get(ATy, {CU, CP});
+    Constant *CPU = ConstantArray::get(ATy, {CP, CU});
+    EXPECT_EQ(CUU, UndefValue::get(CUU->getType()));
+    EXPECT_EQ(CPP, PoisonValue::get(CPP->getType()));
+    EXPECT_NE(CUP, UndefValue::get(CUP->getType()));
+    EXPECT_NE(CPU, UndefValue::get(CPU->getType()));
+  }
 }
 
 TEST(ConstantsTest, GetSplatValueRoundTrip) {

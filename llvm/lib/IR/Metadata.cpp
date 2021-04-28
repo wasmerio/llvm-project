@@ -534,13 +534,13 @@ MDNode::MDNode(LLVMContext &Context, unsigned ID, StorageType Storage,
   countUnresolvedOperands();
 }
 
-TempMDNode MDNode::clone() const {
+TempMDNode MDNode::clone(LLVMContext *DestContext) const {
   switch (getMetadataID()) {
   default:
     llvm_unreachable("Invalid MDNode subclass");
 #define HANDLE_MDNODE_LEAF(CLASS)                                              \
   case CLASS##Kind:                                                            \
-    return cast<CLASS>(this)->cloneImpl();
+    return cast<CLASS>(this)->cloneImpl(DestContext);
 #include "llvm/IR/Metadata.def"
   }
 }
@@ -1413,12 +1413,12 @@ bool Instruction::extractProfMetadata(uint64_t &TrueVal,
 }
 
 bool Instruction::extractProfTotalWeight(uint64_t &TotalVal) const {
-  assert((getOpcode() == Instruction::Br ||
-          getOpcode() == Instruction::Select ||
-          getOpcode() == Instruction::Call ||
-          getOpcode() == Instruction::Invoke ||
-          getOpcode() == Instruction::Switch) &&
-         "Looking for branch weights on something besides branch");
+  assert(
+      (getOpcode() == Instruction::Br || getOpcode() == Instruction::Select ||
+       getOpcode() == Instruction::Call || getOpcode() == Instruction::Invoke ||
+       getOpcode() == Instruction::IndirectBr ||
+       getOpcode() == Instruction::Switch) &&
+      "Looking for branch weights on something besides branch");
 
   TotalVal = 0;
   auto *ProfileData = getMetadata(LLVMContext::MD_prof);

@@ -135,14 +135,13 @@ Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
     : Diags(Diags), VFS(std::move(VFS)), Mode(GCCMode),
       SaveTemps(SaveTempsNone), BitcodeEmbed(EmbedNone), LTOMode(LTOK_None),
       ClangExecutable(ClangExecutable), SysRoot(DEFAULT_SYSROOT),
-      DriverTitle(Title), CCPrintStatReportFilename(nullptr),
-      CCPrintOptionsFilename(nullptr), CCPrintHeadersFilename(nullptr),
-      CCLogDiagnosticsFilename(nullptr), CCCPrintBindings(false),
-      CCPrintOptions(false), CCPrintHeaders(false), CCLogDiagnostics(false),
-      CCGenDiagnostics(false), CCPrintProcessStats(false),
-      TargetTriple(TargetTriple), CCCGenericGCCName(""), Saver(Alloc),
-      CheckInputsExist(true), GenReproducer(false),
-      SuppressMissingInputWarning(false) {
+      DriverTitle(Title), CCPrintStatReportFilename(), CCPrintOptionsFilename(),
+      CCPrintHeadersFilename(), CCLogDiagnosticsFilename(),
+      CCCPrintBindings(false), CCPrintOptions(false), CCPrintHeaders(false),
+      CCLogDiagnostics(false), CCGenDiagnostics(false),
+      CCPrintProcessStats(false), TargetTriple(TargetTriple),
+      CCCGenericGCCName(""), Saver(Alloc), CheckInputsExist(true),
+      GenReproducer(false), SuppressMissingInputWarning(false) {
   // Provide a sane fallback if no VFS is specified.
   if (!this->VFS)
     this->VFS = llvm::vfs::getRealFileSystem();
@@ -1824,6 +1823,15 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
     return false;
   }
 
+  if (C.getArgs().hasArg(options::OPT_print_runtime_dir)) {
+    std::string CandidateRuntimePath = TC.getRuntimePath();
+    if (getVFS().exists(CandidateRuntimePath))
+      llvm::outs() << CandidateRuntimePath << '\n';
+    else
+      llvm::outs() << TC.getCompilerRTPath() << '\n';
+    return false;
+  }
+
   // FIXME: The following handlers should use a callback mechanism, we don't
   // know what the client would like to do.
   if (Arg *A = C.getArgs().getLastArg(options::OPT_print_file_name_EQ)) {
@@ -1889,6 +1897,12 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
   if (C.getArgs().hasArg(options::OPT_print_effective_triple)) {
     const llvm::Triple Triple(TC.ComputeEffectiveClangTriple(C.getArgs()));
     llvm::outs() << Triple.getTriple() << "\n";
+    return false;
+  }
+
+  if (C.getArgs().hasArg(options::OPT_print_multiarch)) {
+    llvm::outs() << TC.getMultiarchTriple(*this, TC.getTriple(), SysRoot)
+                 << "\n";
     return false;
   }
 
@@ -3990,10 +4004,13 @@ void Driver::BuildJobs(Compilation &C) const {
   }
 
   const llvm::Triple &RawTriple = C.getDefaultToolChain().getTriple();
-  if (RawTriple.isOSAIX())
+  if (RawTriple.isOSAIX()) {
     if (Arg *A = C.getArgs().getLastArg(options::OPT_G))
       Diag(diag::err_drv_unsupported_opt_for_target)
           << A->getSpelling() << RawTriple.str();
+    if (LTOMode == LTOK_Thin)
+      Diag(diag::err_drv_clang_unsupported) << "thinLTO on AIX";
+  }
 
   // Collect the list of architectures.
   llvm::StringSet<> ArchNames;
@@ -4048,7 +4065,7 @@ void Driver::BuildJobs(Compilation &C) const {
       else
         LinkingOutput = getDefaultImageName();
 
-      if (!CCPrintStatReportFilename) {
+      if (CCPrintStatReportFilename.empty()) {
         using namespace llvm;
         // Human readable output.
         outs() << sys::path::filename(Cmd.getExecutable()) << ": "
@@ -4071,8 +4088,9 @@ void Driver::BuildJobs(Compilation &C) const {
             << '\n';
         Out.flush();
         std::error_code EC;
-        llvm::raw_fd_ostream OS(CCPrintStatReportFilename, EC,
-                                llvm::sys::fs::OF_Append);
+        llvm::raw_fd_ostream OS(CCPrintStatReportFilename.c_str(), EC,
+                                llvm::sys::fs::OF_Append |
+                                    llvm::sys::fs::OF_Text);
         if (EC)
           return;
         auto L = OS.lock();
@@ -5061,11 +5079,6 @@ void Driver::generatePrefixedToolNames(
   // FIXME: Needs a better variable than TargetTriple
   Names.emplace_back((TargetTriple + "-" + Tool).str());
   Names.emplace_back(Tool);
-
-  // Allow the discovery of tools prefixed with LLVM's default target triple.
-  std::string DefaultTargetTriple = llvm::sys::getDefaultTargetTriple();
-  if (DefaultTargetTriple != TargetTriple)
-    Names.emplace_back((DefaultTargetTriple + "-" + Tool).str());
 }
 
 static bool ScanDirForExecutable(SmallString<128> &Dir, StringRef Name) {

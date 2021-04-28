@@ -28,6 +28,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Allocator.h"
@@ -390,17 +391,13 @@ MLIRContext::MLIRContext(const DialectRegistry &registry)
   //// Attributes.
   //// Note: These must be registered after the types as they may generate one
   //// of the above types internally.
-  /// Bool Attributes.
-  impl->falseAttr = AttributeUniquer::get<IntegerAttr>(
-                        this, impl->int1Ty, APInt(/*numBits=*/1, false))
-                        .cast<BoolAttr>();
-  impl->trueAttr = AttributeUniquer::get<IntegerAttr>(
-                       this, impl->int1Ty, APInt(/*numBits=*/1, true))
-                       .cast<BoolAttr>();
-  /// Unit Attribute.
-  impl->unitAttr = AttributeUniquer::get<UnitAttr>(this);
   /// Unknown Location Attribute.
   impl->unknownLocAttr = AttributeUniquer::get<UnknownLoc>(this);
+  /// Bool Attributes.
+  impl->falseAttr = IntegerAttr::getBoolAttrUnchecked(impl->int1Ty, false);
+  impl->trueAttr = IntegerAttr::getBoolAttrUnchecked(impl->int1Ty, true);
+  /// Unit Attribute.
+  impl->unitAttr = AttributeUniquer::get<UnitAttr>(this);
   /// The empty dictionary attribute.
   impl->emptyDictionaryAttr = DictionaryAttr::getEmptyUnchecked(this);
 

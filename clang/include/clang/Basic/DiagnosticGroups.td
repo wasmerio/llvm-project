@@ -162,8 +162,12 @@ def CXX11CompatDeprecatedWritableStr :
 def DeprecatedArrayCompare : DiagGroup<"deprecated-array-compare">;
 def DeprecatedAttributes : DiagGroup<"deprecated-attributes">;
 def DeprecatedCommaSubscript : DiagGroup<"deprecated-comma-subscript">;
-def DeprecatedCopy : DiagGroup<"deprecated-copy">;
-def DeprecatedCopyDtor : DiagGroup<"deprecated-copy-dtor">;
+def DeprecatedCopyWithUserProvidedCopy : DiagGroup<"deprecated-copy-with-user-provided-copy">;
+def DeprecatedCopyWithUserProvidedDtor : DiagGroup<"deprecated-copy-with-user-provided-dtor">;
+def DeprecatedCopy : DiagGroup<"deprecated-copy", [DeprecatedCopyWithUserProvidedCopy]>;
+def DeprecatedCopyWithDtor : DiagGroup<"deprecated-copy-with-dtor", [DeprecatedCopyWithUserProvidedDtor]>;
+// For compatibility with GCC.
+def : DiagGroup<"deprecated-copy-dtor", [DeprecatedCopyWithDtor]>;
 def DeprecatedDeclarations : DiagGroup<"deprecated-declarations">;
 def UnavailableDeclarations : DiagGroup<"unavailable-declarations">;
 def UnguardedAvailabilityNew : DiagGroup<"unguarded-availability-new">;
@@ -186,7 +190,7 @@ def Deprecated : DiagGroup<"deprecated", [DeprecatedAnonEnumEnumConversion,
                                           DeprecatedAttributes,
                                           DeprecatedCommaSubscript,
                                           DeprecatedCopy,
-                                          DeprecatedCopyDtor,
+                                          DeprecatedCopyWithDtor,
                                           DeprecatedDeclarations,
                                           DeprecatedDynamicExceptionSpec,
                                           DeprecatedEnumCompare,
@@ -253,22 +257,30 @@ def : DiagGroup<"c++1z-compat-mangling", [CXX17CompatMangling]>;
 // Name of this warning in GCC.
 def NoexceptType : DiagGroup<"noexcept-type", [CXX17CompatMangling]>;
 
-// Warnings for C2x code which is not compatible with prior C standards.
+// Warnings for C code which is not compatible with previous C standards.
 def CPre2xCompat : DiagGroup<"pre-c2x-compat">;
 def CPre2xCompatPedantic : DiagGroup<"pre-c2x-compat-pedantic",
                                      [CPre2xCompat]>;
 
-// Warnings for C++1y code which is not compatible with prior C++ standards.
-def CXXPre14Compat : DiagGroup<"c++98-c++11-compat">;
-def CXXPre14CompatPedantic : DiagGroup<"c++98-c++11-compat-pedantic",
+// Warnings for C++ code which is not compatible with previous C++ standards.
+def CXXPre14Compat : DiagGroup<"pre-c++14-compat">;
+def : DiagGroup<"c++98-c++11-compat", [CXXPre14Compat]>;
+def CXXPre14CompatPedantic : DiagGroup<"pre-c++14-compat-pedantic",
                                        [CXXPre14Compat,
                                         CXXPre14CompatBinaryLiteral]>;
-def CXXPre17Compat : DiagGroup<"c++98-c++11-c++14-compat">;
-def CXXPre17CompatPedantic : DiagGroup<"c++98-c++11-c++14-compat-pedantic",
+def : DiagGroup<"c++98-c++11-compat-pedantic", [CXXPre14CompatPedantic]>;
+def CXXPre17Compat : DiagGroup<"pre-c++17-compat">;
+def : DiagGroup<"c++98-c++11-c++14-compat", [CXXPre17Compat]>;
+def CXXPre17CompatPedantic : DiagGroup<"pre-c++17-compat-pedantic",
                                        [CXXPre17Compat]>;
-def CXXPre20Compat : DiagGroup<"c++98-c++11-c++14-c++17-compat">;
-def CXXPre20CompatPedantic : DiagGroup<"c++98-c++11-c++14-c++17-compat-pedantic",
+def : DiagGroup<"c++98-c++11-c++14-compat-pedantic",
+                [CXXPre17CompatPedantic]>;
+def CXXPre20Compat : DiagGroup<"pre-c++20-compat">;
+def : DiagGroup<"c++98-c++11-c++14-c++17-compat", [CXXPre20Compat]>;
+def CXXPre20CompatPedantic : DiagGroup<"pre-c++20-compat-pedantic",
                                        [CXXPre20Compat]>;
+def : DiagGroup<"c++98-c++11-c++14-c++17-compat-pedantic",
+                [CXXPre20CompatPedantic]>;
 def CXXPre2bCompat : DiagGroup<"pre-c++2b-compat">;
 def CXXPre2bCompatPedantic :
   DiagGroup<"pre-c++2b-compat-pedantic", [CXXPre2bCompat]>;
@@ -491,6 +503,7 @@ def PrivateExtern : DiagGroup<"private-extern">;
 def SelTypeCast : DiagGroup<"cast-of-sel-type">;
 def FunctionDefInObjCContainer : DiagGroup<"function-def-in-objc-container">;
 def BadFunctionCast : DiagGroup<"bad-function-cast">;
+def CastFunctionType : DiagGroup<"cast-function-type">;
 def ObjCPropertyImpl : DiagGroup<"objc-property-implementation">;
 def ObjCPropertyNoAttribute : DiagGroup<"objc-property-no-attribute">;
 def ObjCPropertyAssignOnObjectType : DiagGroup<"objc-property-assign-on-object-type">;
@@ -582,11 +595,13 @@ def SwiftNameAttribute : DiagGroup<"swift-name-attribute">;
 def IntInBoolContext : DiagGroup<"int-in-bool-context">;
 def TautologicalTypeLimitCompare : DiagGroup<"tautological-type-limit-compare">;
 def TautologicalUnsignedZeroCompare : DiagGroup<"tautological-unsigned-zero-compare">;
+def TautologicalUnsignedCharZeroCompare : DiagGroup<"tautological-unsigned-char-zero-compare">;
 def TautologicalUnsignedEnumZeroCompare : DiagGroup<"tautological-unsigned-enum-zero-compare">;
 // For compatibility with GCC. Tautological comparison warnings for constants
 // that are an extremal value of the type.
 def TypeLimits : DiagGroup<"type-limits", [TautologicalTypeLimitCompare,
                                            TautologicalUnsignedZeroCompare,
+                                           TautologicalUnsignedCharZeroCompare,
                                            TautologicalUnsignedEnumZeroCompare]>;
 // Additional tautological comparison warnings based on the expression, not
 // only on its type.
@@ -709,6 +724,8 @@ def UnusedMemberFunction : DiagGroup<"unused-member-function",
 def UnusedLabel : DiagGroup<"unused-label">;
 def UnusedLambdaCapture : DiagGroup<"unused-lambda-capture">;
 def UnusedParameter : DiagGroup<"unused-parameter">;
+def UnusedButSetParameter : DiagGroup<"unused-but-set-parameter">;
+def UnusedButSetVariable : DiagGroup<"unused-but-set-variable">;
 def UnusedResult : DiagGroup<"unused-result">;
 def PotentiallyEvaluatedExpression : DiagGroup<"potentially-evaluated-expression">;
 def UnevaluatedExpression : DiagGroup<"unevaluated-expression",
@@ -850,7 +867,8 @@ def Conversion : DiagGroup<"conversion",
                  DiagCategory<"Value Conversion Issue">;
 
 def Unused : DiagGroup<"unused",
-                       [UnusedArgument, UnusedFunction, UnusedLabel,
+                       [UnusedArgument, UnusedButSetVariable,
+                        UnusedFunction, UnusedLabel,
                         // UnusedParameter, (matches GCC's behavior)
                         // UnusedTemplate, (clean-up libc++ before enabling)
                         // UnusedMemberFunction, (clean-up llvm before enabling)
@@ -907,6 +925,7 @@ def Extra : DiagGroup<"extra", [
     SemiBeforeMethodBody,
     MissingMethodReturnType,
     SignCompare,
+    UnusedButSetParameter,
     UnusedParameter,
     NullPointerArithmetic,
     EmptyInitStatement,
@@ -1267,3 +1286,5 @@ in addition with the pragmas or -fmax-tokens flag to get any warnings.
 def WebAssemblyExceptionSpec : DiagGroup<"wasm-exception-spec">;
 
 def RTTI : DiagGroup<"rtti">;
+
+def OpenCLCoreFeaturesDiagGroup : DiagGroup<"pedantic-core-features">;

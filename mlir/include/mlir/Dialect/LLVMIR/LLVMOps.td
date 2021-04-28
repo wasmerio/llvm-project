@@ -200,7 +200,7 @@ def LLVM_ICmpOp : LLVM_Op<"icmp", [NoSideEffect]> {
     OpBuilder<(ins "ICmpPredicate":$predicate, "Value":$lhs, "Value":$rhs),
     [{
       build($_builder, $_state, IntegerType::get(lhs.getType().getContext(), 1),
-            $_builder.getI64IntegerAttr(static_cast<int64_t>(predicate)), lhs, rhs);
+            predicate, lhs, rhs);
     }]>];
   let parser = [{ return parseCmpOp<ICmpPredicate>(parser, result); }];
   let printer = [{ printICmpOp(p, *this); }];
@@ -246,14 +246,6 @@ def LLVM_FCmpOp : LLVM_Op<"fcmp", [
   let llvmBuilder = [{
     $res = builder.CreateFCmp(getLLVMCmpPredicate($predicate), $lhs, $rhs);
   }];
-  let builders = [
-    OpBuilder<(ins "FCmpPredicate":$predicate, "Value":$lhs, "Value":$rhs,
-                  CArg<"FastmathFlags", "{}">:$fmf),
-    [{
-      build($_builder, $_state, IntegerType::get(lhs.getType().getContext(), 1),
-            $_builder.getI64IntegerAttr(static_cast<int64_t>(predicate)), lhs, rhs,
-            ::mlir::LLVM::FMFAttr::get($_builder.getContext(), fmf));
-    }]>];
   let parser = [{ return parseCmpOp<FCmpPredicate>(parser, result); }];
   let printer = [{ printFCmpOp(p, *this); }];
 }
@@ -788,6 +780,17 @@ def Linkage : LLVM_EnumAttr<
   let cppNamespace = "::mlir::LLVM";
 }
 
+def UnnamedAddrNone : LLVM_EnumAttrCase<"None", "", "None", 0>;
+def UnnamedAddrLocal : LLVM_EnumAttrCase<"Local", "local_unnamed_addr", "Local", 1>;
+def UnnamedAddrGlobal : LLVM_EnumAttrCase<"Global", "unnamed_addr", "Global", 2>;
+
+def UnnamedAddr : LLVM_EnumAttr<
+    "UnnamedAddr",
+    "::llvm::GlobalValue::UnnamedAddr",
+    "LLVM GlobalValue UnnamedAddr",
+    [UnnamedAddrNone, UnnamedAddrLocal, UnnamedAddrGlobal]> {
+  let cppNamespace = "::mlir::LLVM";
+}
 
 def LLVM_AddressOfOp : LLVM_Op<"mlir.addressof"> {
   let arguments = (ins FlatSymbolRefAttr:$global_name);
@@ -904,7 +907,9 @@ def LLVM_GlobalOp : LLVM_Op<"mlir.global",
     StrAttr:$sym_name,
     Linkage:$linkage,
     OptionalAttr<AnyAttr>:$value,
-    DefaultValuedAttr<Confined<I32Attr, [IntNonNegative]>, "0">:$addr_space
+    DefaultValuedAttr<Confined<I32Attr, [IntNonNegative]>, "0">:$addr_space,
+    OptionalAttr<UnnamedAddr>:$unnamed_addr,
+    OptionalAttr<StrAttr>:$section
   );
   let summary = "LLVM dialect global.";
   let description = [{

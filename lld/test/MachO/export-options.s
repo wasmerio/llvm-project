@@ -11,18 +11,35 @@
 # CONFLICT: error: cannot use both -exported_symbol* and -unexported_symbol* options
 # CONFLICT-NEXT: >>> ignoring unexports
 
+## Check that exported literal symbol name is present in symbol table
+# RUN: not %lld -dylib %t/default.o -o /dev/null \
+# RUN:         -exported_symbol absent_literal \
+# RUN:         -exported_symbol absent_gl?b 2>&1 | \
+# RUN:     FileCheck --check-prefix=UNDEF %s
+
+# UNDEF: error: undefined symbol absent_literal
+# UNDEF-NEXT: >>> referenced from option -exported_symbol(s_list)
+# UNDEF-NOT: error: {{.*}} absent_gl{{.}}b
+
+## Check that exported symbol is global
+# RUN: not %lld -dylib %t/default.o -o /dev/null \
+# RUN:         -exported_symbol _private_extern 2>&1 | \
+# RUN:     FileCheck --check-prefix=PRIVATE %s
+
+# PRIVATE: error: cannot export hidden symbol _private_extern
+
 #--- default.s
 
-.macro DEFSYM, type, sym
-\type \sym
-\sym:
+.globl _keep_globl, _hide_globl
+_keep_globl:
   retq
-.endm
-
-DEFSYM .globl, _keep_globl
-DEFSYM .globl, _hide_globl
-DEFSYM .private_extern, _keep_private
-DEFSYM .private_extern, _show_private
+_hide_globl:
+  retq
+.private_extern _private_extern
+_private_extern:
+  retq
+_private:
+  retq
 
 ## Check that the export trie is unaltered
 # RUN: %lld -dylib %t/default.o -o %t/default
@@ -32,54 +49,52 @@ DEFSYM .private_extern, _show_private
 # DEFAULT-LABEL: Exports trie:
 # DEFAULT-DAG:   _hide_globl
 # DEFAULT-DAG:   _keep_globl
-# DEFAULT-NOT:   _hide_private
-# DEFAULT-NOT:   _show_private
+# DEFAULT-NOT:   _private_extern
 
-## Check that the export trie is properly augmented
-## Check that non-matching literal pattern has no effect
-# RUN: %lld -dylib %t/default.o -o %t/export \
-# RUN:     -exported_symbol _show_private \
-# RUN:     -exported_symbol _extra_cruft -exported_symbol '*xtra_cr?ft'
-# RUN: llvm-objdump --macho --exports-trie %t/export | \
-# RUN:     FileCheck --check-prefix=EXPORTED %s
+## Check that the export trie is shaped by an allow list and then
+## by a deny list. Both lists are designed to yield the same result.
 
-# EXPORTED-LABEL: Exports trie:
-# EXPORTED-DAG:   _show_private
-# EXPORTED-NOT:   _hide_globl
-# EXPORTED-NOT:   _keep_globl
-# EXPORTED-NOT:   _hide_private
-# EXPORTED-NOT:   {{.*}}xtra_cr{{.}}ft
+## Check the allow list
+# RUN: %lld -dylib %t/default.o -o %t/allowed \
+# RUN:     -exported_symbol _keep_globl
+# RUN: llvm-objdump --macho --exports-trie %t/allowed | \
+# RUN:     FileCheck --check-prefix=TRIE %s
+# RUN: llvm-nm -m %t/allowed | \
+# RUN:     FileCheck --check-prefix=NM %s
 
-## Check that the export trie is properly diminished
-## Check that non-matching glob pattern has no effect
-# RUN: %lld -dylib %t/default.o -o %t/unexport \
-# RUN:     -unexported_symbol _hide_global
-# RUN: llvm-objdump --macho --exports-trie %t/unexport | \
-# RUN:     FileCheck --check-prefix=UNEXPORTED %s
+## Check the deny list
+# RUN: %lld -dylib %t/default.o -o %t/denied \
+# RUN:     -unexported_symbol _hide_globl
+# RUN: llvm-objdump --macho --exports-trie %t/denied | \
+# RUN:     FileCheck --check-prefix=TRIE %s
+# RUN: llvm-nm -m %t/denied | \
+# RUN:     FileCheck --check-prefix=NM %s
 
-# UNEXPORTED-LABEL: Exports trie:
-# UNEXPORTED-DAG:   _keep_globl
-# UNEXPORTED-NOT:   _hide_globl
-# UNEXPORTED-NOT:   _show_private
-# UNEXPORTED-NOT:   _hide_private
+# TRIE-LABEL: Exports trie:
+# TRIE-DAG:   _keep_globl
+# TRIE-NOT:   _hide_globl
+# TRIE-NOT:   _private_extern
+
+# NM-DAG: external _keep_globl
+# NM-DAG: non-external (was a private external) _hide_globl
+# NM-DAG: non-external (was a private external) _private_extern
 
 # RUN: llvm-mc -filetype=obj -triple=x86_64-apple-macos \
 # RUN:     %t/symdefs.s -o %t/symdefs.o
 
 #--- symdefs.s
 
-.macro DEFSYM, sym
-.private_extern \sym
-\sym:
+.globl literal_only, literal_also, globby_only, globby_also
+literal_only:
   retq
-.endm
+literal_also:
+  retq
+globby_only:
+  retq
+globby_also:
+  retq
 
-DEFSYM literal_only
-DEFSYM literal_also
-DEFSYM globby_only
-DEFSYM globby_also
-
-#--- literals
+#--- literals.txt
 
   literal_only # comment
   literal_also
@@ -90,7 +105,7 @@ DEFSYM globby_also
 ## Check that only string-literal patterns match
 ## Check that comments and blank lines are stripped from symbol list
 # RUN: %lld -dylib %t/symdefs.o -o %t/literal \
-# RUN:     -exported_symbols_list %t/literals
+# RUN:     -exported_symbols_list %t/literals.txt
 # RUN: llvm-objdump --macho --exports-trie %t/literal | \
 # RUN:     FileCheck --check-prefix=LITERAL %s
 
@@ -99,7 +114,7 @@ DEFSYM globby_also
 # LITERAL-DAG: globby_also
 # LITERAL-NOT: globby_only
 
-#--- globbys
+#--- globbys.txt
 
 # literal_only
   l?ter[aeiou]l_*[^y] # comment
@@ -109,7 +124,7 @@ DEFSYM globby_also
 ## Check that only glob patterns match
 ## Check that comments and blank lines are stripped from symbol list
 # RUN: %lld -dylib %t/symdefs.o -o %t/globby \
-# RUN:     -exported_symbols_list %t/globbys
+# RUN:     -exported_symbols_list %t/globbys.txt
 # RUN: llvm-objdump --macho --exports-trie %t/globby | \
 # RUN:     FileCheck --check-prefix=GLOBBY %s
 

@@ -4,3 +4,5 @@
 ; RUN: llvm-as %S/Inputs/basiclink.b.ll -o %t.bar.bc
 ; RUN: llvm-link %t.foo.bc %t.bar.bc -o %t.bc
 ; RUN: llvm-link %t.bar.bc %t.foo.bc -o %t.bc
+; RUN: llvm-link --context-each-input %t.bar.bc %t.foo.bc -o %t.bc
+; RUN: llvm-link --context-each-input %t.foo.bc %t.bar.bc -o %t.bc

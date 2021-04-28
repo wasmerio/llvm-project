@@ -1,4 +1,5 @@
 ; RUN: llvm-link %s %p/Inputs/byref-type-input.ll -S | FileCheck %s
+; RUN: llvm-link --context-each-input %s %p/Inputs/byref-type-input.ll -S | FileCheck %s
 
 %a = type { i64 }
 %struct = type { i32, i8 }

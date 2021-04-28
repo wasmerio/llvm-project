@@ -741,6 +741,20 @@ void CodeGenModule::Release() {
 
   if (CodeGenOpts.NoPLT)
     getModule().setRtLibUseGOT();
+  if (CodeGenOpts.UnwindTables)
+    getModule().setUwtable();
+
+  switch (CodeGenOpts.getFramePointer()) {
+  case CodeGenOptions::FramePointerKind::None:
+    // 0 ("none") is the default.
+    break;
+  case CodeGenOptions::FramePointerKind::NonLeaf:
+    getModule().setFramePointer(llvm::FramePointerKind::NonLeaf);
+    break;
+  case CodeGenOptions::FramePointerKind::All:
+    getModule().setFramePointer(llvm::FramePointerKind::All);
+    break;
+  }
 
   SimplifyPersonality();
 
@@ -978,20 +992,14 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
   if (TT.isOSBinFormatCOFF() || (TT.isOSWindows() && TT.isOSBinFormatMachO()))
     return true;
 
-  const auto &CGOpts = CGM.getCodeGenOpts();
-  llvm::Reloc::Model RM = CGOpts.RelocationModel;
-  const auto &LOpts = CGM.getLangOpts();
-
-  if (TT.isOSBinFormatMachO()) {
-    if (RM == llvm::Reloc::Static)
-      return true;
-    return GV->isStrongDefinitionForLinker();
-  }
-
   // Only handle COFF and ELF for now.
   if (!TT.isOSBinFormatELF())
     return false;
 
+  // If this is not an executable, don't assume anything is local.
+  const auto &CGOpts = CGM.getCodeGenOpts();
+  llvm::Reloc::Model RM = CGOpts.RelocationModel;
+  const auto &LOpts = CGM.getLangOpts();
   if (RM != llvm::Reloc::Static && !LOpts.PIE) {
     // On ELF, if -fno-semantic-interposition is specified and the target
     // supports local aliases, there will be neither CC1
@@ -3195,7 +3203,9 @@ TargetMVPriority(const TargetInfo &TI,
 }
 
 void CodeGenModule::emitMultiVersionFunctions() {
-  for (GlobalDecl GD : MultiVersionFuncs) {
+  std::vector<GlobalDecl> MVFuncsToEmit;
+  MultiVersionFuncs.swap(MVFuncsToEmit);
+  for (GlobalDecl GD : MVFuncsToEmit) {
     SmallVector<CodeGenFunction::MultiVersionResolverOption, 10> Options;
     const FunctionDecl *FD = cast<FunctionDecl>(GD.getDecl());
     getContext().forEachMultiversionedFunctionVersion(
@@ -3249,6 +3259,17 @@ void CodeGenModule::emitMultiVersionFunctions() {
     CodeGenFunction CGF(*this);
     CGF.EmitMultiVersionResolver(ResolverFunc, Options);
   }
+
+  // Ensure that any additions to the deferred decls list caused by emitting a
+  // variant are emitted.  This can happen when the variant itself is inline and
+  // calls a function without linkage.
+  if (!MVFuncsToEmit.empty())
+    EmitDeferred();
+
+  // Ensure that any additions to the multiversion funcs list from either the
+  // deferred decls or the multiversion functions themselves are emitted.
+  if (!MultiVersionFuncs.empty())
+    emitMultiVersionFunctions();
 }
 
 void CodeGenModule::emitCPUDispatchDefinition(GlobalDecl GD) {
@@ -3650,8 +3671,8 @@ GetRuntimeFunctionDecl(ASTContext &C, StringRef Name) {
   DeclContext *DC = TranslationUnitDecl::castToDeclContext(TUDecl);
 
   IdentifierInfo &CII = C.Idents.get(Name);
-  for (const auto &Result : DC->lookup(&CII))
-    if (const auto FD = dyn_cast<FunctionDecl>(Result))
+  for (const auto *Result : DC->lookup(&CII))
+    if (const auto *FD = dyn_cast<FunctionDecl>(Result))
       return FD;
 
   if (!C.getLangOpts().CPlusPlus)
@@ -3665,15 +3686,15 @@ GetRuntimeFunctionDecl(ASTContext &C, StringRef Name) {
 
   for (const auto &N : {"__cxxabiv1", "std"}) {
     IdentifierInfo &NS = C.Idents.get(N);
-    for (const auto &Result : DC->lookup(&NS)) {
-      NamespaceDecl *ND = dyn_cast<NamespaceDecl>(Result);
-      if (auto LSD = dyn_cast<LinkageSpecDecl>(Result))
-        for (const auto &Result : LSD->lookup(&NS))
+    for (const auto *Result : DC->lookup(&NS)) {
+      const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(Result);
+      if (auto *LSD = dyn_cast<LinkageSpecDecl>(Result))
+        for (const auto *Result : LSD->lookup(&NS))
           if ((ND = dyn_cast<NamespaceDecl>(Result)))
             break;
 
       if (ND)
-        for (const auto &Result : ND->lookup(&CXXII))
+        for (const auto *Result : ND->lookup(&CXXII))
           if (const auto *FD = dyn_cast<FunctionDecl>(Result))
             return FD;
     }
@@ -4095,6 +4116,10 @@ LangAS CodeGenModule::GetGlobalVarAddressSpace(const VarDecl *D) {
     return AddrSpace;
   }
 
+  if (LangOpts.SYCLIsDevice &&
+      (!D || D->getType().getAddressSpace() == LangAS::Default))
+    return LangAS::sycl_global;
+
   if (LangOpts.CUDA && LangOpts.CUDAIsDevice) {
     if (D && D->hasAttr<CUDAConstantAttr>())
       return LangAS::cuda_constant;
@@ -4116,10 +4141,12 @@ LangAS CodeGenModule::GetGlobalVarAddressSpace(const VarDecl *D) {
   return getTargetCodeGenInfo().getGlobalVarAddressSpace(*this, D);
 }
 
-LangAS CodeGenModule::getStringLiteralAddressSpace() const {
+LangAS CodeGenModule::GetGlobalConstantAddressSpace() const {
   // OpenCL v1.2 s6.5.3: a string literal is in the constant address space.
   if (LangOpts.OpenCL)
     return LangAS::opencl_constant;
+  if (LangOpts.SYCLIsDevice)
+    return LangAS::sycl_global;
   if (auto AS = getTarget().getConstantAddressSpace())
     return AS.getValue();
   return LangAS::Default;
@@ -4138,13 +4165,12 @@ castStringLiteralToDefaultAddressSpace(CodeGenModule &CGM,
                                        llvm::GlobalVariable *GV) {
   llvm::Constant *Cast = GV;
   if (!CGM.getLangOpts().OpenCL) {
-    if (auto AS = CGM.getTarget().getConstantAddressSpace()) {
-      if (AS != LangAS::Default)
-        Cast = CGM.getTargetCodeGenInfo().performAddrSpaceCast(
-            CGM, GV, AS.getValue(), LangAS::Default,
-            GV->getValueType()->getPointerTo(
-                CGM.getContext().getTargetAddressSpace(LangAS::Default)));
-    }
+    auto AS = CGM.GetGlobalConstantAddressSpace();
+    if (AS != LangAS::Default)
+      Cast = CGM.getTargetCodeGenInfo().performAddrSpaceCast(
+          CGM, GV, AS, LangAS::Default,
+          GV->getValueType()->getPointerTo(
+              CGM.getContext().getTargetAddressSpace(LangAS::Default)));
   }
   return Cast;
 }
@@ -4262,9 +4288,9 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
        D->getType()->isCUDADeviceBuiltinTextureType());
   if (getLangOpts().CUDA &&
       (IsCUDASharedVar || IsCUDAShadowVar || IsCUDADeviceShadowVar))
-    Init = llvm::UndefValue::get(getTypes().ConvertType(ASTTy));
+    Init = llvm::UndefValue::get(getTypes().ConvertTypeForMem(ASTTy));
   else if (D->hasAttr<LoaderUninitializedAttr>())
-    Init = llvm::UndefValue::get(getTypes().ConvertType(ASTTy));
+    Init = llvm::UndefValue::get(getTypes().ConvertTypeForMem(ASTTy));
   else if (!InitExpr) {
     // This is a tentative definition; tentative definitions are
     // implicitly initialized with { 0 }.
@@ -5044,7 +5070,7 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
         DeclContext *DC = TranslationUnitDecl::castToDeclContext(TUDecl);
 
         const VarDecl *VD = nullptr;
-        for (const auto &Result : DC->lookup(&II))
+        for (const auto *Result : DC->lookup(&II))
           if ((VD = dyn_cast<VarDecl>(Result)))
             break;
 
@@ -5256,7 +5282,7 @@ GenerateStringLiteral(llvm::Constant *C, llvm::GlobalValue::LinkageTypes LT,
                       CodeGenModule &CGM, StringRef GlobalName,
                       CharUnits Alignment) {
   unsigned AddrSpace = CGM.getContext().getTargetAddressSpace(
-      CGM.getStringLiteralAddressSpace());
+      CGM.GetGlobalConstantAddressSpace());
 
   llvm::Module &M = CGM.getModule();
   // Create a global variable for this string

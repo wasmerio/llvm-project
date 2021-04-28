@@ -52,6 +52,10 @@ enum LLVMConstants : uint32_t {
   DEBUG_METADATA_VERSION = 3 // Current debug info version number.
 };
 
+/// Magic number in the value profile metadata showing a target has been
+/// promoted for the instruction and shouldn't be promoted again.
+const uint64_t NOMORE_ICP_MAGICNUM = -1;
+
 /// Root of the metadata hierarchy.
 ///
 /// This is a root class for typeless data in the IR.
@@ -942,7 +946,7 @@ public:
                                          ArrayRef<Metadata *> MDs);
 
   /// Create a (temporary) clone of this.
-  TempMDNode clone() const;
+  TempMDNode clone(LLVMContext *DestContext = nullptr) const;
 
   /// Deallocate a node created by getTemporary.
   ///
@@ -1150,8 +1154,8 @@ class MDTuple : public MDNode {
   static MDTuple *getImpl(LLVMContext &Context, ArrayRef<Metadata *> MDs,
                           StorageType Storage, bool ShouldCreate = true);
 
-  TempMDTuple cloneImpl() const {
-    return getTemporary(getContext(), SmallVector<Metadata *, 4>(operands()));
+  TempMDTuple cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), SmallVector<Metadata *, 4>(operands()));
   }
 
 public:
@@ -1184,7 +1188,7 @@ public:
   }
 
   /// Return a (temporary) clone of this.
-  TempMDTuple clone() const { return cloneImpl(); }
+  TempMDTuple clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDTupleKind;
@@ -1243,13 +1247,16 @@ public:
 ///
 /// An iterator that transforms an \a MDNode::iterator into an iterator over a
 /// particular Metadata subclass.
-template <class T>
-class TypedMDOperandIterator
-    : public std::iterator<std::input_iterator_tag, T *, std::ptrdiff_t, void,
-                           T *> {
+template <class T> class TypedMDOperandIterator {
   MDNode::op_iterator I = nullptr;
 
 public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type = T *;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = T *;
+
   TypedMDOperandIterator() = default;
   explicit TypedMDOperandIterator(MDNode::op_iterator I) : I(I) {}
 
@@ -1388,9 +1395,7 @@ class NamedMDNode : public ilist_node<NamedMDNode> {
 
   explicit NamedMDNode(const Twine &N);
 
-  template<class T1, class T2>
-  class op_iterator_impl :
-      public std::iterator<std::bidirectional_iterator_tag, T2> {
+  template <class T1, class T2> class op_iterator_impl {
     friend class NamedMDNode;
 
     const NamedMDNode *Node = nullptr;
@@ -1399,6 +1404,12 @@ class NamedMDNode : public ilist_node<NamedMDNode> {
     op_iterator_impl(const NamedMDNode *N, unsigned i) : Node(N), Idx(i) {}
 
   public:
+    using iterator_category = std::bidirectional_iterator_tag;
+    using value_type = T2;
+    using difference_type = std::ptrdiff_t;
+    using pointer = value_type *;
+    using reference = value_type &;
+
     op_iterator_impl() = default;
 
     bool operator==(const op_iterator_impl &o) const { return Idx == o.Idx; }

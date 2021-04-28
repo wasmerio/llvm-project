@@ -80,11 +80,16 @@ public:
     return cast_or_null<DIType>(N->getOperand(I));
   }
 
-  class iterator : std::iterator<std::input_iterator_tag, DIType *,
-                                 std::ptrdiff_t, void, DIType *> {
+  class iterator {
     MDNode::op_iterator I = nullptr;
 
   public:
+    using iterator_category = std::input_iterator_tag;
+    using value_type = DIType *;
+    using difference_type = std::ptrdiff_t;
+    using pointer = void;
+    using reference = DIType *;
+
     iterator() = default;
     explicit iterator(MDNode::op_iterator I) : I(I) {}
 
@@ -239,8 +244,9 @@ class GenericDINode : public DINode {
                                 MDString *Header, ArrayRef<Metadata *> DwarfOps,
                                 StorageType Storage, bool ShouldCreate = true);
 
-  TempGenericDINode cloneImpl() const {
-    return getTemporary(getContext(), getTag(), getHeader(),
+  TempGenericDINode cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getTag(),
+                        getHeader(),
                         SmallVector<Metadata *, 4>(dwarf_operands()));
   }
 
@@ -255,7 +261,7 @@ public:
                     (Tag, Header, DwarfOps))
 
   /// Return a (temporary) clone of this.
-  TempGenericDINode clone() const { return cloneImpl(); }
+  TempGenericDINode clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   unsigned getTag() const { return SubclassData16; }
   StringRef getHeader() const { return getStringOperand(0); }
@@ -306,8 +312,8 @@ class DISubrange : public DINode {
                              Metadata *Stride, StorageType Storage,
                              bool ShouldCreate = true);
 
-  TempDISubrange cloneImpl() const {
-    return getTemporary(getContext(), getRawCountNode(), getRawLowerBound(),
+  TempDISubrange cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getRawCountNode(), getRawLowerBound(),
                         getRawUpperBound(), getRawStride());
   }
 
@@ -323,7 +329,7 @@ public:
                      Metadata *UpperBound, Metadata *Stride),
                     (CountNode, LowerBound, UpperBound, Stride))
 
-  TempDISubrange clone() const { return cloneImpl(); }
+  TempDISubrange clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   Metadata *getRawCountNode() const {
     return getOperand(0).get();
@@ -335,10 +341,9 @@ public:
 
   Metadata *getRawStride() const { return getOperand(3).get(); }
 
-  typedef PointerUnion<ConstantInt*, DIVariable*> CountType;
   typedef PointerUnion<ConstantInt *, DIVariable *, DIExpression *> BoundType;
 
-  CountType getCount() const;
+  BoundType getCount() const;
 
   BoundType getLowerBound() const;
 
@@ -367,8 +372,8 @@ class DIGenericSubrange : public DINode {
                                     Metadata *Stride, StorageType Storage,
                                     bool ShouldCreate = true);
 
-  TempDIGenericSubrange cloneImpl() const {
-    return getTemporary(getContext(), getRawCountNode(), getRawLowerBound(),
+  TempDIGenericSubrange cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getRawCountNode(), getRawLowerBound(),
                         getRawUpperBound(), getRawStride());
   }
 
@@ -378,7 +383,7 @@ public:
                      Metadata *UpperBound, Metadata *Stride),
                     (CountNode, LowerBound, UpperBound, Stride))
 
-  TempDIGenericSubrange clone() const { return cloneImpl(); }
+  TempDIGenericSubrange clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   Metadata *getRawCountNode() const { return getOperand(0).get(); }
   Metadata *getRawLowerBound() const { return getOperand(1).get(); }
@@ -428,8 +433,8 @@ class DIEnumerator : public DINode {
                                bool IsUnsigned, MDString *Name,
                                StorageType Storage, bool ShouldCreate = true);
 
-  TempDIEnumerator cloneImpl() const {
-    return getTemporary(getContext(), getValue(), isUnsigned(), getName());
+  TempDIEnumerator cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getValue(), isUnsigned(), getName());
   }
 
 public:
@@ -446,7 +451,7 @@ public:
                     (APInt Value, bool IsUnsigned, MDString *Name),
                     (Value, IsUnsigned, Name))
 
-  TempDIEnumerator clone() const { return cloneImpl(); }
+  TempDIEnumerator clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   const APInt &getValue() const { return Value; }
   bool isUnsigned() const { return SubclassData32; }
@@ -586,8 +591,8 @@ private:
                          Optional<MDString *> Source, StorageType Storage,
                          bool ShouldCreate = true);
 
-  TempDIFile cloneImpl() const {
-    return getTemporary(getContext(), getFilename(), getDirectory(),
+  TempDIFile cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getFilename(), getDirectory(),
                         getChecksum(), getSource());
   }
 
@@ -601,7 +606,7 @@ public:
                              Optional<MDString *> Source = None),
                     (Filename, Directory, CS, Source))
 
-  TempDIFile clone() const { return cloneImpl(); }
+  TempDIFile clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   StringRef getFilename() const { return getStringOperand(0); }
   StringRef getDirectory() const { return getStringOperand(1); }
@@ -685,8 +690,8 @@ protected:
   }
 
 public:
-  TempDIType clone() const {
-    return TempDIType(cast<DIType>(MDNode::clone().release()));
+  TempDIType clone(LLVMContext *DestContext = nullptr) const {
+    return TempDIType(cast<DIType>(MDNode::clone(DestContext).release()));
   }
 
   unsigned getLine() const { return Line; }
@@ -704,8 +709,8 @@ public:
   MDString *getRawName() const { return getOperandAs<MDString>(2); }
 
   /// Returns a new temporary DIType with updated Flags
-  TempDIType cloneWithFlags(DIFlags NewFlags) const {
-    auto NewTy = clone();
+  TempDIType cloneWithFlags(DIFlags NewFlags, LLVMContext *DestContext = nullptr) const {
+    auto NewTy = clone(DestContext);
     NewTy->Flags = NewFlags;
     return NewTy;
   }
@@ -787,8 +792,8 @@ class DIBasicType : public DIType {
                               DIFlags Flags, StorageType Storage,
                               bool ShouldCreate = true);
 
-  TempDIBasicType cloneImpl() const {
-    return getTemporary(getContext(), getTag(), getName(), getSizeInBits(),
+  TempDIBasicType cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getTag(), getName(), getSizeInBits(),
                         getAlignInBits(), getEncoding(), getFlags());
   }
 
@@ -810,7 +815,7 @@ public:
                      uint32_t AlignInBits, unsigned Encoding, DIFlags Flags),
                     (Tag, Name, SizeInBits, AlignInBits, Encoding, Flags))
 
-  TempDIBasicType clone() const { return cloneImpl(); }
+  TempDIBasicType clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   unsigned getEncoding() const { return Encoding; }
 
@@ -855,8 +860,8 @@ class DIStringType : public DIType {
                                uint32_t AlignInBits, unsigned Encoding,
                                StorageType Storage, bool ShouldCreate = true);
 
-  TempDIStringType cloneImpl() const {
-    return getTemporary(getContext(), getTag(), getRawName(),
+  TempDIStringType cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getTag(), getRawName(),
                         getRawStringLength(), getRawStringLengthExp(),
                         getSizeInBits(), getAlignInBits(), getEncoding());
   }
@@ -879,7 +884,7 @@ public:
                     (Tag, Name, StringLength, StringLengthExp, SizeInBits,
                      AlignInBits, Encoding))
 
-  TempDIStringType clone() const { return cloneImpl(); }
+  TempDIStringType clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == DIStringTypeKind;
@@ -942,8 +947,8 @@ class DIDerivedType : public DIType {
                                 DIFlags Flags, Metadata *ExtraData,
                                 StorageType Storage, bool ShouldCreate = true);
 
-  TempDIDerivedType cloneImpl() const {
-    return getTemporary(getContext(), getTag(), getName(), getFile(), getLine(),
+  TempDIDerivedType cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getTag(), getName(), getFile(), getLine(),
                         getScope(), getBaseType(), getSizeInBits(),
                         getAlignInBits(), getOffsetInBits(),
                         getDWARFAddressSpace(), getFlags(), getExtraData());
@@ -970,7 +975,7 @@ public:
                      AlignInBits, OffsetInBits, DWARFAddressSpace, Flags,
                      ExtraData))
 
-  TempDIDerivedType clone() const { return cloneImpl(); }
+  TempDIDerivedType clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   /// Get the base type this is derived from.
   DIType *getBaseType() const { return cast_or_null<DIType>(getRawBaseType()); }
@@ -1091,8 +1096,8 @@ class DICompositeType : public DIType {
           Metadata *Associated, Metadata *Allocated, Metadata *Rank,
           StorageType Storage, bool ShouldCreate = true);
 
-  TempDICompositeType cloneImpl() const {
-    return getTemporary(getContext(), getTag(), getName(), getFile(), getLine(),
+  TempDICompositeType cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getTag(), getName(), getFile(), getLine(),
                         getScope(), getBaseType(), getSizeInBits(),
                         getAlignInBits(), getOffsetInBits(), getFlags(),
                         getElements(), getRuntimeLang(), getVTableHolder(),
@@ -1129,7 +1134,7 @@ public:
        OffsetInBits, Flags, Elements, RuntimeLang, VTableHolder, TemplateParams,
        Identifier, Discriminator, DataLocation, Associated, Allocated, Rank))
 
-  TempDICompositeType clone() const { return cloneImpl(); }
+  TempDICompositeType clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   /// Get a DICompositeType with the given ODR identifier.
   ///
@@ -1278,8 +1283,8 @@ class DISubroutineType : public DIType {
                                    StorageType Storage,
                                    bool ShouldCreate = true);
 
-  TempDISubroutineType cloneImpl() const {
-    return getTemporary(getContext(), getFlags(), getCC(), getTypeArray());
+  TempDISubroutineType cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getFlags(), getCC(), getTypeArray());
   }
 
 public:
@@ -1290,7 +1295,7 @@ public:
                     (DIFlags Flags, uint8_t CC, Metadata *TypeArray),
                     (Flags, CC, TypeArray))
 
-  TempDISubroutineType clone() const { return cloneImpl(); }
+  TempDISubroutineType clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   uint8_t getCC() const { return CC; }
 
@@ -1389,9 +1394,9 @@ private:
           bool RangesBaseAddress, MDString *SysRoot, MDString *SDK,
           StorageType Storage, bool ShouldCreate = true);
 
-  TempDICompileUnit cloneImpl() const {
+  TempDICompileUnit cloneImpl(LLVMContext *DestContext = nullptr) const {
     return getTemporary(
-        getContext(), getSourceLanguage(), getFile(), getProducer(),
+        DestContext ? *DestContext : getContext(), getSourceLanguage(), getFile(), getProducer(),
         isOptimized(), getFlags(), getRuntimeVersion(), getSplitDebugFilename(),
         getEmissionKind(), getEnumTypes(), getRetainedTypes(),
         getGlobalVariables(), getImportedEntities(), getMacros(), DWOId,
@@ -1434,7 +1439,7 @@ public:
        GlobalVariables, ImportedEntities, Macros, DWOId, SplitDebugInlining,
        DebugInfoForProfiling, NameTableKind, RangesBaseAddress, SysRoot, SDK))
 
-  TempDICompileUnit clone() const { return cloneImpl(); }
+  TempDICompileUnit clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   unsigned getSourceLanguage() const { return SourceLanguage; }
   bool isOptimized() const { return IsOptimized; }
@@ -1597,10 +1602,10 @@ class DILocation : public MDNode {
       return D >> 1;
   }
 
-  TempDILocation cloneImpl() const {
+  TempDILocation cloneImpl(LLVMContext *DestContext = nullptr) const {
     // Get the raw scope/inlinedAt since it is possible to invoke this on
     // a DILocation containing temporary metadata.
-    return getTemporary(getContext(), getLine(), getColumn(), getRawScope(),
+    return getTemporary(DestContext ? *DestContext : getContext(), getLine(), getColumn(), getRawScope(),
                         getRawInlinedAt(), isImplicitCode());
   }
 
@@ -1627,7 +1632,7 @@ public:
                     (Line, Column, Scope, InlinedAt, ImplicitCode))
 
   /// Return a (temporary) clone of this.
-  TempDILocation clone() const { return cloneImpl(); }
+  TempDILocation clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   unsigned getLine() const { return SubclassData32; }
   unsigned getColumn() const { return SubclassData16; }
@@ -1710,13 +1715,13 @@ public:
   }
 
   /// Returns a new DILocation with updated \p Discriminator.
-  inline const DILocation *cloneWithDiscriminator(unsigned Discriminator) const;
+  inline const DILocation *cloneWithDiscriminator(unsigned Discriminator, LLVMContext *DestContext = nullptr) const;
 
   /// Returns a new DILocation with updated base discriminator \p BD. Only the
   /// base discriminator is set in the new DILocation, the other encoded values
   /// are elided.
   /// If the discriminator cannot be encoded, the function returns None.
-  inline Optional<const DILocation *> cloneWithBaseDiscriminator(unsigned BD) const;
+  inline Optional<const DILocation *> cloneWithBaseDiscriminator(unsigned BD, LLVMContext *DestContext = nullptr) const;
 
   /// Returns the duplication factor stored in the discriminator, or 1 if no
   /// duplication factor (or 0) is encoded.
@@ -1732,7 +1737,7 @@ public:
   /// duplication factor encoded in the discriminator. The current duplication
   /// factor is as defined by getDuplicationFactor().
   /// Returns None if encoding failed.
-  inline Optional<const DILocation *> cloneByMultiplyingDuplicationFactor(unsigned DF) const;
+  inline Optional<const DILocation *> cloneByMultiplyingDuplicationFactor(unsigned DF, LLVMContext *DestContext = nullptr) const;
 
   /// When two instructions are combined into a single instruction we also
   /// need to combine the original locations into a single location.
@@ -1901,8 +1906,8 @@ private:
                                Metadata *RetainedNodes, Metadata *ThrownTypes,
                                StorageType Storage, bool ShouldCreate = true);
 
-  TempDISubprogram cloneImpl() const {
-    return getTemporary(getContext(), getScope(), getName(), getLinkageName(),
+  TempDISubprogram cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getScope(), getName(), getLinkageName(),
                         getFile(), getLine(), getType(), getScopeLine(),
                         getContainingType(), getVirtualIndex(),
                         getThisAdjustment(), getFlags(), getSPFlags(),
@@ -1936,11 +1941,11 @@ public:
        VirtualIndex, ThisAdjustment, Flags, SPFlags, Unit, TemplateParams,
        Declaration, RetainedNodes, ThrownTypes))
 
-  TempDISubprogram clone() const { return cloneImpl(); }
+  TempDISubprogram clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   /// Returns a new temporary DISubprogram with updated Flags
-  TempDISubprogram cloneWithFlags(DIFlags NewFlags) const {
-    auto NewSP = clone();
+  TempDISubprogram cloneWithFlags(DIFlags NewFlags, LLVMContext *DestContext = nullptr) const {
+    auto NewSP = clone(DestContext);
     NewSP->Flags = NewFlags;
     return NewSP;
   }
@@ -2011,6 +2016,8 @@ public:
 
   StringRef getName() const { return getStringOperand(2); }
   StringRef getLinkageName() const { return getStringOperand(3); }
+  /// Only used by clients of CloneFunction, and only right after the cloning.
+  void replaceLinkageName(MDString *LN) { replaceOperandWith(3, LN); }
 
   DISubroutineType *getType() const {
     return cast_or_null<DISubroutineType>(getRawType());
@@ -2113,8 +2120,8 @@ class DILexicalBlock : public DILexicalBlockBase {
                                  Metadata *File, unsigned Line, unsigned Column,
                                  StorageType Storage, bool ShouldCreate = true);
 
-  TempDILexicalBlock cloneImpl() const {
-    return getTemporary(getContext(), getScope(), getFile(), getLine(),
+  TempDILexicalBlock cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getScope(), getFile(), getLine(),
                         getColumn());
   }
 
@@ -2126,7 +2133,7 @@ public:
                                      unsigned Line, unsigned Column),
                     (Scope, File, Line, Column))
 
-  TempDILexicalBlock clone() const { return cloneImpl(); }
+  TempDILexicalBlock clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   unsigned getLine() const { return Line; }
   unsigned getColumn() const { return Column; }
@@ -2162,8 +2169,8 @@ class DILexicalBlockFile : public DILexicalBlockBase {
                                      StorageType Storage,
                                      bool ShouldCreate = true);
 
-  TempDILexicalBlockFile cloneImpl() const {
-    return getTemporary(getContext(), getScope(), getFile(),
+  TempDILexicalBlockFile cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getScope(), getFile(),
                         getDiscriminator());
   }
 
@@ -2175,7 +2182,7 @@ public:
                     (Metadata * Scope, Metadata *File, unsigned Discriminator),
                     (Scope, File, Discriminator))
 
-  TempDILexicalBlockFile clone() const { return cloneImpl(); }
+  TempDILexicalBlockFile clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
   unsigned getDiscriminator() const { return Discriminator; }
 
   static bool classof(const Metadata *MD) {
@@ -2190,7 +2197,7 @@ unsigned DILocation::getDiscriminator() const {
 }
 
 const DILocation *
-DILocation::cloneWithDiscriminator(unsigned Discriminator) const {
+DILocation::cloneWithDiscriminator(unsigned Discriminator, LLVMContext *DestContext) const {
   DIScope *Scope = getScope();
   // Skip all parent DILexicalBlockFile that already have a discriminator
   // assigned. We do not want to have nested DILexicalBlockFiles that have
@@ -2201,8 +2208,8 @@ DILocation::cloneWithDiscriminator(unsigned Discriminator) const {
        LBF = dyn_cast<DILexicalBlockFile>(Scope))
     Scope = LBF->getScope();
   DILexicalBlockFile *NewScope =
-      DILexicalBlockFile::get(getContext(), Scope, getFile(), Discriminator);
-  return DILocation::get(getContext(), getLine(), getColumn(), NewScope,
+      DILexicalBlockFile::get(DestContext ? *DestContext : getContext(), Scope, getFile(), Discriminator);
+  return DILocation::get(DestContext ? *DestContext : getContext(), getLine(), getColumn(), NewScope,
                          getInlinedAt());
 }
 
@@ -2218,17 +2225,17 @@ unsigned DILocation::getCopyIdentifier() const {
   return getCopyIdentifierFromDiscriminator(getDiscriminator());
 }
 
-Optional<const DILocation *> DILocation::cloneWithBaseDiscriminator(unsigned D) const {
+Optional<const DILocation *> DILocation::cloneWithBaseDiscriminator(unsigned D, LLVMContext *DestContext) const {
   unsigned BD, DF, CI;
   decodeDiscriminator(getDiscriminator(), BD, DF, CI);
   if (D == BD)
     return this;
   if (Optional<unsigned> Encoded = encodeDiscriminator(D, DF, CI))
-    return cloneWithDiscriminator(*Encoded);
+    return cloneWithDiscriminator(*Encoded, DestContext);
   return None;
 }
 
-Optional<const DILocation *> DILocation::cloneByMultiplyingDuplicationFactor(unsigned DF) const {
+Optional<const DILocation *> DILocation::cloneByMultiplyingDuplicationFactor(unsigned DF, LLVMContext *DestContext) const {
   DF *= getDuplicationFactor();
   if (DF <= 1)
     return this;
@@ -2236,7 +2243,7 @@ Optional<const DILocation *> DILocation::cloneByMultiplyingDuplicationFactor(uns
   unsigned BD = getBaseDiscriminator();
   unsigned CI = getCopyIdentifier();
   if (Optional<unsigned> D = encodeDiscriminator(BD, DF, CI))
-    return cloneWithDiscriminator(*D);
+    return cloneWithDiscriminator(*D, DestContext);
   return None;
 }
 
@@ -2263,8 +2270,8 @@ class DINamespace : public DIScope {
                               MDString *Name, bool ExportSymbols,
                               StorageType Storage, bool ShouldCreate = true);
 
-  TempDINamespace cloneImpl() const {
-    return getTemporary(getContext(), getScope(), getName(),
+  TempDINamespace cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getScope(), getName(),
                         getExportSymbols());
   }
 
@@ -2276,7 +2283,7 @@ public:
                     (Metadata *Scope, MDString *Name, bool ExportSymbols),
                     (Scope, Name, ExportSymbols))
 
-  TempDINamespace clone() const { return cloneImpl(); }
+  TempDINamespace clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   bool getExportSymbols() const { return ExportSymbols; }
   DIScope *getScope() const { return cast_or_null<DIScope>(getRawScope()); }
@@ -2321,8 +2328,8 @@ class DIModule : public DIScope {
                            MDString *APINotesFile, unsigned LineNo, bool IsDecl,
                            StorageType Storage, bool ShouldCreate = true);
 
-  TempDIModule cloneImpl() const {
-    return getTemporary(getContext(), getFile(), getScope(), getName(),
+  TempDIModule cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getFile(), getScope(), getName(),
                         getConfigurationMacros(), getIncludePath(),
                         getAPINotesFile(), getLineNo(), getIsDecl());
   }
@@ -2343,7 +2350,7 @@ public:
                     (File, Scope, Name, ConfigurationMacros, IncludePath,
                      APINotesFile, LineNo, IsDecl))
 
-  TempDIModule clone() const { return cloneImpl(); }
+  TempDIModule clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   DIScope *getScope() const { return cast_or_null<DIScope>(getRawScope()); }
   StringRef getName() const { return getStringOperand(2); }
@@ -2413,8 +2420,8 @@ class DITemplateTypeParameter : public DITemplateParameter {
                                           StorageType Storage,
                                           bool ShouldCreate = true);
 
-  TempDITemplateTypeParameter cloneImpl() const {
-    return getTemporary(getContext(), getName(), getType(), isDefault());
+  TempDITemplateTypeParameter cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getName(), getType(), isDefault());
   }
 
 public:
@@ -2425,7 +2432,7 @@ public:
                     (MDString *Name, Metadata *Type, bool IsDefault),
                     (Name, Type, IsDefault))
 
-  TempDITemplateTypeParameter clone() const { return cloneImpl(); }
+  TempDITemplateTypeParameter clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == DITemplateTypeParameterKind;
@@ -2457,8 +2464,8 @@ class DITemplateValueParameter : public DITemplateParameter {
                                            StorageType Storage,
                                            bool ShouldCreate = true);
 
-  TempDITemplateValueParameter cloneImpl() const {
-    return getTemporary(getContext(), getTag(), getName(), getType(),
+  TempDITemplateValueParameter cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getTag(), getName(), getType(),
                         isDefault(), getValue());
   }
 
@@ -2472,7 +2479,7 @@ public:
                      bool IsDefault, Metadata *Value),
                     (Tag, Name, Type, IsDefault, Value))
 
-  TempDITemplateValueParameter clone() const { return cloneImpl(); }
+  TempDITemplateValueParameter clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   Metadata *getValue() const { return getOperand(2); }
 
@@ -2565,14 +2572,14 @@ class DIExpression : public MDNode {
                                ArrayRef<uint64_t> Elements, StorageType Storage,
                                bool ShouldCreate = true);
 
-  TempDIExpression cloneImpl() const {
-    return getTemporary(getContext(), getElements());
+  TempDIExpression cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getElements());
   }
 
 public:
   DEFINE_MDNODE_GET(DIExpression, (ArrayRef<uint64_t> Elements), (Elements))
 
-  TempDIExpression clone() const { return cloneImpl(); }
+  TempDIExpression clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   ArrayRef<uint64_t> getElements() const { return Elements; }
 
@@ -2583,11 +2590,20 @@ public:
     return Elements[I];
   }
 
-  /// Determine whether this represents a standalone constant value.
-  bool isConstant() const;
+  enum SignedOrUnsignedConstant { SignedConstant, UnsignedConstant };
+  /// Determine whether this represents a constant value, if so
+  // return it's sign information.
+  llvm::Optional<SignedOrUnsignedConstant> isConstant() const;
 
-  /// Determine whether this represents a standalone signed constant value.
-  bool isSignedConstant() const;
+  /// Return the number of unique location operands referred to (via
+  /// DW_OP_LLVM_arg) in this expression; this is not necessarily the number of
+  /// instances of DW_OP_LLVM_arg within the expression.
+  /// For example, for the expression:
+  ///   (DW_OP_LLVM_arg 0, DW_OP_LLVM_arg 1, DW_OP_plus,
+  ///    DW_OP_LLVM_arg 0, DW_OP_mul)
+  /// This function would return 2, as there are two unique location operands
+  /// (0 and 1).
+  uint64_t getNumLocationOperands() const;
 
   using element_iterator = ArrayRef<uint64_t>::iterator;
 
@@ -2629,11 +2645,16 @@ public:
   };
 
   /// An iterator for expression operands.
-  class expr_op_iterator
-      : public std::iterator<std::input_iterator_tag, ExprOperand> {
+  class expr_op_iterator {
     ExprOperand Op;
 
   public:
+    using iterator_category = std::input_iterator_tag;
+    using value_type = ExprOperand;
+    using difference_type = std::ptrdiff_t;
+    using pointer = value_type *;
+    using reference = value_type &;
+
     expr_op_iterator() = default;
     explicit expr_op_iterator(element_iterator I) : Op(I) {}
 
@@ -2730,6 +2751,10 @@ public:
   /// If this is a constant offset, extract it. If there is no expression,
   /// return true with an offset of zero.
   bool extractIfOffset(int64_t &Offset) const;
+
+  /// Returns true iff this DIExpression contains at least one instance of
+  /// `DW_OP_LLVM_arg, n` for all n in [0, N).
+  bool hasAllLocationOps(unsigned N) const;
 
   /// Checks if the last 4 elements of the expression are DW_OP_constu <DWARF
   /// Address Space> DW_OP_swap DW_OP_xderef and extracts the <DWARF Address
@@ -2919,8 +2944,8 @@ class DIGlobalVariable : public DIVariable {
           Metadata *StaticDataMemberDeclaration, Metadata *TemplateParams,
           uint32_t AlignInBits, StorageType Storage, bool ShouldCreate = true);
 
-  TempDIGlobalVariable cloneImpl() const {
-    return getTemporary(getContext(), getScope(), getName(), getLinkageName(),
+  TempDIGlobalVariable cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getScope(), getName(), getLinkageName(),
                         getFile(), getLine(), getType(), isLocalToUnit(),
                         isDefinition(), getStaticDataMemberDeclaration(),
                         getTemplateParams(), getAlignInBits());
@@ -2946,7 +2971,7 @@ public:
                      IsDefinition, StaticDataMemberDeclaration, TemplateParams,
                      AlignInBits))
 
-  TempDIGlobalVariable clone() const { return cloneImpl(); }
+  TempDIGlobalVariable clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   bool isLocalToUnit() const { return IsLocalToUnit; }
   bool isDefinition() const { return IsDefinition; }
@@ -2987,11 +3012,11 @@ class DICommonBlock : public DIScope {
   }
   static DICommonBlock *getImpl(LLVMContext &Context, Metadata *Scope,
                                 Metadata *Decl, MDString *Name, Metadata *File,
-                                unsigned LineNo, 
+                                unsigned LineNo,
                                 StorageType Storage, bool ShouldCreate = true);
 
-  TempDICommonBlock cloneImpl() const {
-    return getTemporary(getContext(), getScope(), getDecl(), getName(),
+  TempDICommonBlock cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getScope(), getDecl(), getName(),
                         getFile(), getLineNo());
   }
 
@@ -3005,7 +3030,7 @@ public:
                      Metadata *File, unsigned LineNo),
                     (Scope, Decl, Name, File, LineNo))
 
-  TempDICommonBlock clone() const { return cloneImpl(); }
+  TempDICommonBlock clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   DIScope *getScope() const { return cast_or_null<DIScope>(getRawScope()); }
   DIGlobalVariable *getDecl() const {
@@ -3058,8 +3083,8 @@ class DILocalVariable : public DIVariable {
                                   uint32_t AlignInBits, StorageType Storage,
                                   bool ShouldCreate = true);
 
-  TempDILocalVariable cloneImpl() const {
-    return getTemporary(getContext(), getScope(), getName(), getFile(),
+  TempDILocalVariable cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getScope(), getName(), getFile(),
                         getLine(), getType(), getArg(), getFlags(),
                         getAlignInBits());
   }
@@ -3076,7 +3101,7 @@ public:
                      DIFlags Flags, uint32_t AlignInBits),
                     (Scope, Name, File, Line, Type, Arg, Flags, AlignInBits))
 
-  TempDILocalVariable clone() const { return cloneImpl(); }
+  TempDILocalVariable clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   /// Get the local scope for this variable.
   ///
@@ -3131,8 +3156,8 @@ class DILabel : public DINode {
                           StorageType Storage,
                           bool ShouldCreate = true);
 
-  TempDILabel cloneImpl() const {
-    return getTemporary(getContext(), getScope(), getName(), getFile(),
+  TempDILabel cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getScope(), getName(), getFile(),
                         getLine());
   }
 
@@ -3146,7 +3171,7 @@ public:
                      unsigned Line),
                     (Scope, Name, File, Line))
 
-  TempDILabel clone() const { return cloneImpl(); }
+  TempDILabel clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   /// Get the local scope for this label.
   ///
@@ -3205,8 +3230,8 @@ class DIObjCProperty : public DINode {
                                  unsigned Attributes, Metadata *Type,
                                  StorageType Storage, bool ShouldCreate = true);
 
-  TempDIObjCProperty cloneImpl() const {
-    return getTemporary(getContext(), getName(), getFile(), getLine(),
+  TempDIObjCProperty cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getName(), getFile(), getLine(),
                         getGetterName(), getSetterName(), getAttributes(),
                         getType());
   }
@@ -3225,7 +3250,7 @@ public:
                     (Name, File, Line, GetterName, SetterName, Attributes,
                      Type))
 
-  TempDIObjCProperty clone() const { return cloneImpl(); }
+  TempDIObjCProperty clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   unsigned getLine() const { return Line; }
   unsigned getAttributes() const { return Attributes; }
@@ -3284,8 +3309,8 @@ class DIImportedEntity : public DINode {
                                    MDString *Name, StorageType Storage,
                                    bool ShouldCreate = true);
 
-  TempDIImportedEntity cloneImpl() const {
-    return getTemporary(getContext(), getTag(), getScope(), getEntity(),
+  TempDIImportedEntity cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getTag(), getScope(), getEntity(),
                         getFile(), getLine(), getName());
   }
 
@@ -3299,7 +3324,7 @@ public:
                      Metadata *File, unsigned Line, MDString *Name),
                     (Tag, Scope, Entity, File, Line, Name))
 
-  TempDIImportedEntity clone() const { return cloneImpl(); }
+  TempDIImportedEntity clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   unsigned getLine() const { return Line; }
   DIScope *getScope() const { return cast_or_null<DIScope>(getRawScope()); }
@@ -3331,8 +3356,8 @@ class DIGlobalVariableExpression : public MDNode {
   getImpl(LLVMContext &Context, Metadata *Variable, Metadata *Expression,
           StorageType Storage, bool ShouldCreate = true);
 
-  TempDIGlobalVariableExpression cloneImpl() const {
-    return getTemporary(getContext(), getVariable(), getExpression());
+  TempDIGlobalVariableExpression cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getVariable(), getExpression());
   }
 
 public:
@@ -3340,7 +3365,7 @@ public:
                     (Metadata * Variable, Metadata *Expression),
                     (Variable, Expression))
 
-  TempDIGlobalVariableExpression clone() const { return cloneImpl(); }
+  TempDIGlobalVariableExpression clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   Metadata *getRawVariable() const { return getOperand(0); }
 
@@ -3429,8 +3454,8 @@ class DIMacro : public DIMacroNode {
                           MDString *Name, MDString *Value, StorageType Storage,
                           bool ShouldCreate = true);
 
-  TempDIMacro cloneImpl() const {
-    return getTemporary(getContext(), getMacinfoType(), getLine(), getName(),
+  TempDIMacro cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getMacinfoType(), getLine(), getName(),
                         getValue());
   }
 
@@ -3442,7 +3467,7 @@ public:
                               MDString *Value),
                     (MIType, Line, Name, Value))
 
-  TempDIMacro clone() const { return cloneImpl(); }
+  TempDIMacro clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   unsigned getLine() const { return Line; }
 
@@ -3480,8 +3505,8 @@ class DIMacroFile : public DIMacroNode {
                               unsigned Line, Metadata *File, Metadata *Elements,
                               StorageType Storage, bool ShouldCreate = true);
 
-  TempDIMacroFile cloneImpl() const {
-    return getTemporary(getContext(), getMacinfoType(), getLine(), getFile(),
+  TempDIMacroFile cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getMacinfoType(), getLine(), getFile(),
                         getElements());
   }
 
@@ -3493,7 +3518,7 @@ public:
                                   Metadata *File, Metadata *Elements),
                     (MIType, Line, File, Elements))
 
-  TempDIMacroFile clone() const { return cloneImpl(); }
+  TempDIMacroFile clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   void replaceElements(DIMacroNodeArray Elements) {
 #ifndef NDEBUG
@@ -3540,8 +3565,8 @@ class DIArgList : public MDNode {
                             ArrayRef<ValueAsMetadata *> Args,
                             StorageType Storage, bool ShouldCreate = true);
 
-  TempDIArgList cloneImpl() const {
-    return getTemporary(getContext(), getArgs());
+  TempDIArgList cloneImpl(LLVMContext *DestContext = nullptr) const {
+    return getTemporary(DestContext ? *DestContext : getContext(), getArgs());
   }
 
   void track();
@@ -3551,7 +3576,7 @@ class DIArgList : public MDNode {
 public:
   DEFINE_MDNODE_GET(DIArgList, (ArrayRef<ValueAsMetadata *> Args), (Args))
 
-  TempDIArgList clone() const { return cloneImpl(); }
+  TempDIArgList clone(LLVMContext *DestContext = nullptr) const { return cloneImpl(DestContext); }
 
   ArrayRef<ValueAsMetadata *> getArgs() const { return Args; }
 

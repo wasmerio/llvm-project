@@ -101,15 +101,17 @@ createTypeCanonicalizedMemRefOperands(OpBuilder &b, Location loc,
 }
 
 LogicalResult mlir::linalg::LinalgOpToLibraryCallRewrite::matchAndRewrite(
-    Operation *op, PatternRewriter &rewriter) const {
+    LinalgOp op, PatternRewriter &rewriter) const {
   // Only LinalgOp for which there is no specialized pattern go through this.
-  if (!isa<LinalgOp>(op) || isa<CopyOp>(op) || isa<IndexedGenericOp>(op))
+  if (isa<CopyOp>(op) || isa<IndexedGenericOp>(op))
     return failure();
 
   auto libraryCallName = getLibraryCallSymbolRef(op, rewriter);
   if (!libraryCallName)
     return failure();
 
+  // TODO: Add support for more complex library call signatures that include
+  // indices or captured values.
   rewriter.replaceOpWithNewOp<mlir::CallOp>(
       op, libraryCallName.getValue(), TypeRange(),
       createTypeCanonicalizedMemRefOperands(rewriter, op->getLoc(),
@@ -192,15 +194,15 @@ mlir::linalg::IndexedGenericOpToLibraryCallRewrite::matchAndRewrite(
 
 /// Populate the given list with patterns that convert from Linalg to Standard.
 void mlir::linalg::populateLinalgToStandardConversionPatterns(
-    OwningRewritePatternList &patterns, MLIRContext *ctx) {
+    RewritePatternSet &patterns) {
   // TODO: ConvOp conversion needs to export a descriptor with relevant
   // attribute values such as kernel striding and dilation.
   // clang-format off
-  patterns.insert<
+  patterns.add<
       CopyOpToLibraryCallRewrite,
       CopyTransposeRewrite,
-      IndexedGenericOpToLibraryCallRewrite>(ctx);
-  patterns.insert<LinalgOpToLibraryCallRewrite>();
+      IndexedGenericOpToLibraryCallRewrite,
+      LinalgOpToLibraryCallRewrite>(patterns.getContext());
   // clang-format on
 }
 
@@ -216,10 +218,10 @@ void ConvertLinalgToStandardPass::runOnOperation() {
   ConversionTarget target(getContext());
   target.addLegalDialect<AffineDialect, memref::MemRefDialect, scf::SCFDialect,
                          StandardOpsDialect>();
-  target.addLegalOp<ModuleOp, FuncOp, ModuleTerminatorOp, ReturnOp>();
+  target.addLegalOp<ModuleOp, FuncOp, ReturnOp>();
   target.addLegalOp<linalg::ReshapeOp, linalg::RangeOp>();
-  OwningRewritePatternList patterns;
-  populateLinalgToStandardConversionPatterns(patterns, &getContext());
+  RewritePatternSet patterns(&getContext());
+  populateLinalgToStandardConversionPatterns(patterns);
   if (failed(applyFullConversion(module, target, std::move(patterns))))
     signalPassFailure();
 }

@@ -59,6 +59,23 @@ llvm.mlir.global weak_odr @weak_odr(42 : i32) : i32
 // CHECK: @external = external global i32
 llvm.mlir.global external @external() : i32
 
+//
+// UnnamedAddr attribute.
+//
+
+// CHECK: @no_unnamed_addr = private constant i64 42
+llvm.mlir.global private constant @no_unnamed_addr(42 : i64) : i64
+// CHECK: @local_unnamed_addr = private local_unnamed_addr constant i64 42
+llvm.mlir.global private local_unnamed_addr constant @local_unnamed_addr(42 : i64) : i64
+// CHECK: @unnamed_addr = private unnamed_addr constant i64 42
+llvm.mlir.global private unnamed_addr constant @unnamed_addr(42 : i64) : i64
+
+//
+// Section attribute.
+//
+
+// CHECK: @sectionvar = internal constant [10 x i8] c"teststring", section ".mysection"
+llvm.mlir.global internal constant @sectionvar("teststring")  {section = ".mysection"}: !llvm.array<10 x i8>
 
 //
 // Declarations of the allocation functions to be linked against. These are
@@ -1261,6 +1278,29 @@ llvm.func @address_taken() {
 llvm.mlir.global internal constant @taker_of_address() : !llvm.ptr<func<void ()>> {
   %0 = llvm.mlir.addressof @address_taken : !llvm.ptr<func<void ()>>
   llvm.return %0 : !llvm.ptr<func<void ()>>
+}
+
+// -----
+
+// CHECK: @forward_use_of_address = linkonce global float* @address_declared_after_use
+llvm.mlir.global linkonce @forward_use_of_address() : !llvm.ptr<f32> {
+  %0 = llvm.mlir.addressof @address_declared_after_use : !llvm.ptr<f32>
+  llvm.return %0 : !llvm.ptr<f32>
+}
+
+llvm.mlir.global linkonce @address_declared_after_use() : f32
+
+// -----
+
+// CHECK: @take_self_address = linkonce global { i32, i32* } {{.*}} { i32, i32* }* @take_self_address
+llvm.mlir.global linkonce @take_self_address() : !llvm.struct<(i32, !llvm.ptr<i32>)> {
+  %z32 = llvm.mlir.constant(0 : i32) : i32
+  %0 = llvm.mlir.undef : !llvm.struct<(i32, !llvm.ptr<i32>)>
+  %1 = llvm.mlir.addressof @take_self_address : !llvm.ptr<!llvm.struct<(i32, !llvm.ptr<i32>)>>
+  %2 = llvm.getelementptr %1[%z32, %z32] : (!llvm.ptr<!llvm.struct<(i32, !llvm.ptr<i32>)>>, i32, i32) -> !llvm.ptr<i32>
+  %3 = llvm.insertvalue %z32, %0[0 : i32] : !llvm.struct<(i32, !llvm.ptr<i32>)>
+  %4 = llvm.insertvalue %2, %3[1 : i32] : !llvm.struct<(i32, !llvm.ptr<i32>)>
+  llvm.return %4 : !llvm.struct<(i32, !llvm.ptr<i32>)>
 }
 
 // -----

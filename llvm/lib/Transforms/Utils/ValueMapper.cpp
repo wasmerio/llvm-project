@@ -69,7 +69,8 @@ struct WorklistEntry {
     MapGlobalInit,
     MapAppendingVar,
     MapGlobalIndirectSymbol,
-    RemapFunction
+    RemapFunction,
+    RemapGlobalObjectMetadata
   };
   struct GVInitTy {
     GlobalVariable *GV;
@@ -84,8 +85,8 @@ struct WorklistEntry {
     Constant *Target;
   };
 
-  unsigned Kind : 2;
-  unsigned MCID : 29;
+  unsigned Kind : 3;
+  unsigned MCID : 28;
   unsigned AppendingGVIsOldCtorDtor : 1;
   unsigned AppendingGVNumNewMembers;
   union {
@@ -93,6 +94,7 @@ struct WorklistEntry {
     AppendingGVTy AppendingGV;
     GlobalIndirectSymbolTy GlobalIndirectSymbol;
     Function *RemapF;
+    GlobalObject *RemapGO;
   } Data;
 };
 
@@ -114,18 +116,31 @@ class Mapper {
 #endif
 
   RemapFlags Flags;
+  LLVMContext *DestContext;
   ValueMapTypeRemapper *TypeMapper;
   unsigned CurrentMCID = 0;
   SmallVector<MappingContext, 2> MCs;
   SmallVector<WorklistEntry, 4> Worklist;
   SmallVector<DelayedBasicBlock, 1> DelayedBBs;
   SmallVector<Constant *, 16> AppendingInits;
+  SmallVector<StringRef, 8> SrcSSNs;
+  SmallVector<StringRef, 8> SrcMDKindNames;
 
 public:
   Mapper(ValueToValueMapTy &VM, RemapFlags Flags,
-         ValueMapTypeRemapper *TypeMapper, ValueMaterializer *Materializer)
-      : Flags(Flags), TypeMapper(TypeMapper),
-        MCs(1, MappingContext(VM, Materializer)) {}
+         ValueMapTypeRemapper *TypeMapper, ValueMaterializer *Materializer,
+         LLVMContext *SrcContext, LLVMContext *DestContext)
+      : Flags(Flags), DestContext(DestContext), TypeMapper(TypeMapper),
+        MCs(1, MappingContext(VM, Materializer)) {
+    if (Flags & RF_LinkAcrossContexts) {
+      assert(SrcContext && "linking across contexts requires a source context");
+      assert(DestContext &&
+             "linking across contexts requires a destination context");
+      assert(TypeMapper && "linking across contexts requires a type mapper");
+      SrcContext->getSyncScopeNames(SrcSSNs);
+      SrcContext->getMDKindNames(SrcMDKindNames);
+    }
+  }
 
   /// ValueMapper should explicitly call \a flush() before destruction.
   ~Mapper() { assert(!hasWorkToDo() && "Expected to be flushed"); }
@@ -157,6 +172,9 @@ public:
   /// (not an MDNode, or MDNode::isResolved() returns true).
   Metadata *mapMetadata(const Metadata *MD);
 
+  /// Map attribute list.
+  AttributeList mapAttributeList(AttributeList Attrs);
+
   void scheduleMapGlobalInitializer(GlobalVariable &GV, Constant &Init,
                                     unsigned MCID);
   void scheduleMapAppendingVariable(GlobalVariable &GV, Constant *InitPrefix,
@@ -166,6 +184,7 @@ public:
   void scheduleMapGlobalIndirectSymbol(GlobalIndirectSymbol &GIS, Constant &Target,
                                        unsigned MCID);
   void scheduleRemapFunction(Function &F, unsigned MCID);
+  void scheduleRemapGlobalObjectMetadata(GlobalObject &GO, unsigned MCID);
 
   void flush();
 
@@ -198,6 +217,7 @@ class MDNodeMapper {
 
   /// A graph of uniqued nodes.
   struct UniquedGraph {
+    LLVMContext *DestContext;
     SmallDenseMap<const Metadata *, Data, 32> Info; // Node properties.
     SmallVector<MDNode *, 16> POT;                  // Post-order traversal.
 
@@ -423,7 +443,7 @@ Value *Mapper::mapValue(const Value *V) {
     auto *MappedMD = mapMetadata(MD);
     if (MD == MappedMD)
       return getVM()[V] = const_cast<Value *>(V);
-    return getVM()[V] = MetadataAsValue::get(V->getContext(), MappedMD);
+    return getVM()[V] = MetadataAsValue::get(DestContext ? *DestContext : V->getContext(), MappedMD);
   }
 
   // Okay, this either must be a constant (which may or may not be mappable) or
@@ -512,11 +532,26 @@ Value *Mapper::mapValue(const Value *V) {
     return getVM()[V] = ConstantStruct::get(cast<StructType>(NewTy), Ops);
   if (isa<ConstantVector>(C))
     return getVM()[V] = ConstantVector::get(Ops);
+
+  // These appear to have no operands because they hold their data inline.
+  if (ConstantDataArray *CDA = dyn_cast<ConstantDataArray>(C))
+    return getVM()[V] = ConstantDataArray::getRaw(
+               CDA->getRawDataValues(), CDA->getNumElements(),
+               cast<ArrayType>(NewTy)->getElementType());
+  if (ConstantDataVector *CDV = dyn_cast<ConstantDataVector>(C))
+    return getVM()[V] = ConstantDataVector::getRaw(
+               CDV->getRawDataValues(), CDV->getNumElements(),
+               cast<VectorType>(NewTy)->getElementType());
+
   // If this is a no-operand constant, it must be because the type was remapped.
   if (isa<UndefValue>(C))
     return getVM()[V] = UndefValue::get(NewTy);
   if (isa<ConstantAggregateZero>(C))
     return getVM()[V] = ConstantAggregateZero::get(NewTy);
+  if (ConstantInt *CI = dyn_cast<ConstantInt>(C))
+    return getVM()[V] = ConstantInt::get(NewTy, CI->getValue());
+  if (ConstantFP *CFP = dyn_cast<ConstantFP>(C))
+    return getVM()[V] = ConstantFP::get(NewTy, CFP->getValue());
   assert(isa<ConstantPointerNull>(C));
   return getVM()[V] = ConstantPointerNull::get(cast<PointerType>(NewTy));
 }
@@ -578,7 +613,7 @@ MDNode *MDNodeMapper::mapDistinctNode(const MDNode &N) {
   if (M.Flags & RF_ReuseAndMutateDistinctMDs) {
     NewM = M.mapToSelf(&N);
   } else {
-    NewM = MDNode::replaceWithDistinct(N.clone());
+    NewM = MDNode::replaceWithDistinct(N.clone(M.DestContext));
     LLVM_DEBUG(dbgs() << "\nMap " << N << "\n"
                       << "To  " << *NewM << "\n\n");
     M.mapToMetadata(&N, NewM);
@@ -602,8 +637,11 @@ Optional<Metadata *> MDNodeMapper::getMappedOp(const Metadata *Op) const {
   if (Optional<Metadata *> MappedOp = M.getVM().getMappedMD(Op))
     return *MappedOp;
 
-  if (isa<MDString>(Op))
+  if (auto MDS = dyn_cast<MDString>(Op)) {
+    if (M.Flags & RF_LinkAcrossContexts)
+      return MDString::get(*M.DestContext, MDS->getString());
     return const_cast<Metadata *>(Op);
+  }
 
   if (auto *CMD = dyn_cast<ConstantAsMetadata>(Op))
     return wrapConstantAsMetadata(*CMD, M.getVM().lookup(CMD->getValue()));
@@ -621,7 +659,7 @@ Metadata &MDNodeMapper::UniquedGraph::getFwdReference(MDNode &Op) {
 
   // Lazily construct a temporary node.
   if (!OpD.Placeholder)
-    OpD.Placeholder = Op.clone();
+    OpD.Placeholder = Op.clone(DestContext);
 
   return *OpD.Placeholder;
 }
@@ -664,8 +702,10 @@ bool MDNodeMapper::createPOT(UniquedGraph &G, const MDNode &FirstN) {
   // Construct a post-order traversal of the uniqued subgraph under FirstN.
   bool AnyChanges = false;
   SmallVector<POTWorklistEntry, 16> Worklist;
-  Worklist.push_back(POTWorklistEntry(const_cast<MDNode &>(FirstN)));
+
+  Worklist.emplace_back(const_cast<MDNode &>(FirstN));
   (void)G.Info[&FirstN];
+
   while (!Worklist.empty()) {
     // Start or continue the traversal through the this node's operands.
     auto &WE = Worklist.back();
@@ -683,9 +723,16 @@ bool MDNodeMapper::createPOT(UniquedGraph &G, const MDNode &FirstN) {
     D.ID = G.POT.size();
     G.POT.push_back(WE.N);
 
+    if (M.Flags & RF_LinkAcrossContexts) {
+      AnyChanges = D.HasChanged = true;
+      if (!D.Placeholder)
+        D.Placeholder = WE.N->clone(M.DestContext);
+    }
+
     // Pop the node off the worklist.
     Worklist.pop_back();
   }
+
   return AnyChanges;
 }
 
@@ -744,7 +791,12 @@ void MDNodeMapper::mapNodesInPOT(UniquedGraph &G) {
     bool HadPlaceholder(D.Placeholder);
 
     // Clone the uniqued node and remap the operands.
-    TempMDNode ClonedN = D.Placeholder ? std::move(D.Placeholder) : N->clone();
+    TempMDNode ClonedN;
+    if (D.Placeholder) {
+      ClonedN = std::move(D.Placeholder);
+    } else {
+      ClonedN = N->clone(M.DestContext);
+    }
     remapOperands(*ClonedN, [this, &D, &G](Metadata *Old) {
       if (Optional<Metadata *> MappedOp = getMappedOp(Old))
         return *MappedOp;
@@ -819,8 +871,11 @@ Optional<Metadata *> Mapper::mapSimpleMetadata(const Metadata *MD) {
   if (Optional<Metadata *> NewMD = getVM().getMappedMD(MD))
     return *NewMD;
 
-  if (isa<MDString>(MD))
+  if (auto MDS = dyn_cast<MDString>(MD)) {
+    if (Flags & RF_LinkAcrossContexts)
+      return MDString::get(*DestContext, MDS->getString());
     return const_cast<Metadata *>(MD);
+  }
 
   // This is a module-level metadata.  If nothing at the module level is
   // changing, use an identity mapping.
@@ -880,6 +935,9 @@ void Mapper::flush() {
     case WorklistEntry::RemapFunction:
       remapFunction(*E.Data.RemapF);
       break;
+    case WorklistEntry::RemapGlobalObjectMetadata:
+      remapGlobalObjectMetadata(*E.Data.RemapGO);
+      break;
     }
   }
   CurrentMCID = 0;
@@ -891,6 +949,57 @@ void Mapper::flush() {
     BasicBlock *BB = cast_or_null<BasicBlock>(mapValue(DBB.OldBB));
     DBB.TempBB->replaceAllUsesWith(BB ? BB : DBB.OldBB);
   }
+}
+
+static Attribute cloneIntoContext(LLVMContext &Context, Attribute A, ValueMapTypeRemapper *TypeMapper) {
+  if (A.isStringAttribute()) {
+    StringRef Kind = A.getKindAsString();
+    StringRef Value = A.getValueAsString();
+    return Attribute::get(Context, Kind, Value);
+  }
+
+  Attribute::AttrKind Kind = A.getKindAsEnum();
+  if (A.isIntAttribute()) {
+    uint64_t Value = A.getValueAsInt();
+    return Attribute::get(Context, Kind, Value);
+  }
+  if (A.isTypeAttribute()) {
+    Type *Ty = A.getValueAsType();
+    Ty = TypeMapper->remapType(Ty);
+    return Attribute::get(Context, Kind, Ty);
+  }
+  return Attribute::get(Context, Kind);
+}
+
+AttributeList Mapper::mapAttributeList(AttributeList Attrs) {
+  if (Flags & RF_LinkAcrossContexts) {
+    AttributeList NewAL;
+    for (auto Index = Attrs.index_begin(), IndexEnd = Attrs.index_end();
+         Index != IndexEnd; ++Index) {
+      AttributeSet AS = Attrs.getAttributes(Index);
+      for (auto A : AS) {
+        NewAL = NewAL.addAttribute(*DestContext, Index,
+                                   cloneIntoContext(*DestContext, A, TypeMapper));
+      }
+    }
+    return NewAL;
+  }
+
+  if (!TypeMapper)
+    return Attrs;
+
+  for (unsigned i = 0; i < Attrs.getNumAttrSets(); ++i) {
+    for (Attribute::AttrKind TypedAttr :
+           {Attribute::ByVal, Attribute::StructRet, Attribute::ByRef,
+            Attribute::InAlloca}) {
+      if (Type *Ty = Attrs.getAttribute(i, TypedAttr).getValueAsType()) {
+        Attrs = Attrs.replaceAttributeType(*DestContext, i, TypedAttr,
+                                           TypeMapper->remapType(Ty));
+        break;
+      }
+    }
+  }
+  return Attrs;
 }
 
 void Mapper::remapInstruction(Instruction *I) {
@@ -921,12 +1030,17 @@ void Mapper::remapInstruction(Instruction *I) {
   // Remap attached metadata.
   SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
   I->getAllMetadata(MDs);
-  for (const auto &MI : MDs) {
-    MDNode *Old = MI.second;
-    MDNode *New = cast_or_null<MDNode>(mapMetadata(Old));
-    if (New != Old)
-      I->setMetadata(MI.first, New);
+  if (!(Flags & RF_LinkAcrossContexts)) {
+    for (const auto &MI : MDs) {
+      MDNode *Old = MI.second;
+      MDNode *New = cast_or_null<MDNode>(mapMetadata(Old));
+      if (New != Old)
+        I->setMetadata(MI.first, New);
+    }
   }
+
+  if (auto *CB = dyn_cast<CallBase>(I))
+    CB->setAttributes(mapAttributeList(CB->getAttributes()));
 
   if (!TypeMapper)
     return;
@@ -940,22 +1054,9 @@ void Mapper::remapInstruction(Instruction *I) {
       Tys.push_back(TypeMapper->remapType(Ty));
     CB->mutateFunctionType(FunctionType::get(
         TypeMapper->remapType(I->getType()), Tys, FTy->isVarArg()));
-
-    LLVMContext &C = CB->getContext();
-    AttributeList Attrs = CB->getAttributes();
-    for (unsigned i = 0; i < Attrs.getNumAttrSets(); ++i) {
-      for (Attribute::AttrKind TypedAttr :
-           {Attribute::ByVal, Attribute::StructRet, Attribute::ByRef}) {
-        if (Type *Ty = Attrs.getAttribute(i, TypedAttr).getValueAsType()) {
-          Attrs = Attrs.replaceAttributeType(C, i, TypedAttr,
-                                             TypeMapper->remapType(Ty));
-          break;
-        }
-      }
-    }
-    CB->setAttributes(Attrs);
     return;
   }
+
   if (auto *AI = dyn_cast<AllocaInst>(I))
     AI->setAllocatedType(TypeMapper->remapType(AI->getAllocatedType()));
   if (auto *GEP = dyn_cast<GetElementPtrInst>(I)) {
@@ -964,15 +1065,62 @@ void Mapper::remapInstruction(Instruction *I) {
     GEP->setResultElementType(
         TypeMapper->remapType(GEP->getResultElementType()));
   }
+
+  SyncScope::ID SSID = SyncScope::System;
+  StringRef SSN;
+  if (Flags & RF_LinkAcrossContexts) {
+    if (auto *FI = dyn_cast<FenceInst>(I)) {
+      SSID = FI->getSyncScopeID();
+    } else if (auto *LI = dyn_cast<LoadInst>(I)) {
+      SSID = LI->getSyncScopeID();
+    } else if (auto *SI = dyn_cast<StoreInst>(I)) {
+      SSID = SI->getSyncScopeID();
+    } else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
+      SSID = AI->getSyncScopeID();
+    }
+    if (SSID != SyncScope::System) {
+      SSN = SrcSSNs[SSID];
+    }
+
+    I->dropUnknownNonDebugMetadata();
+    I->setMetadata(LLVMContext::MD_dbg, nullptr);
+  }
+
   I->mutateType(TypeMapper->remapType(I->getType()));
+
+  if (Flags & RF_LinkAcrossContexts) {
+    if (SSID != SyncScope::System) {
+      auto NewSSID = I->getContext().getOrInsertSyncScopeID(SSN);
+      if (auto *FI = dyn_cast<FenceInst>(I)) {
+        FI->setSyncScopeID(NewSSID);
+      } else if (auto *LI = dyn_cast<LoadInst>(I)) {
+        LI->setSyncScopeID(NewSSID);
+      } else if (auto *SI = dyn_cast<StoreInst>(I)) {
+        SI->setSyncScopeID(NewSSID);
+      } else if (auto *AI = dyn_cast<AtomicRMWInst>(I)) {
+        AI->setSyncScopeID(NewSSID);
+      }
+    }
+
+    for (const auto &MI : MDs) {
+      MDNode *Old = MI.second;
+      MDNode *New = cast_or_null<MDNode>(mapMetadata(Old));
+      I->setMetadata(DestContext->getMDKindID(SrcMDKindNames[MI.first]), New);
+    }
+  }
 }
 
 void Mapper::remapGlobalObjectMetadata(GlobalObject &GO) {
   SmallVector<std::pair<unsigned, MDNode *>, 8> MDs;
   GO.getAllMetadata(MDs);
   GO.clearMetadata();
-  for (const auto &I : MDs)
-    GO.addMetadata(I.first, *cast<MDNode>(mapMetadata(I.second)));
+
+  for (const auto &I : MDs) {
+    unsigned Kind = I.first;
+    if (Flags & RF_LinkAcrossContexts)
+      Kind = DestContext->getMDKindID(SrcMDKindNames[Kind]);
+    GO.addMetadata(Kind, *cast<MDNode>(mapMetadata(I.second)));
+  }
 }
 
 void Mapper::remapFunction(Function &F) {
@@ -986,13 +1134,27 @@ void Mapper::remapFunction(Function &F) {
 
   // Remap the argument types.
   if (TypeMapper)
-    for (Argument &A : F.args())
+    for (Argument &A : F.args()) {
+      std::string Name = A.getName().str();
+      A.setName("");
       A.mutateType(TypeMapper->remapType(A.getType()));
+      A.setName(Name);
+    }
 
   // Remap the instructions.
-  for (BasicBlock &BB : F)
-    for (Instruction &I : BB)
+  for (BasicBlock &BB : F) {
+    for (Instruction &I : BB) {
+      std::string Name = I.getName().str();
+      I.setName("");
       remapInstruction(&I);
+      I.setName(Name);
+    }
+    // If linking across contexts.
+    std::string Name = BB.getName().str();
+    BB.setName("");
+    BB.mutateType(TypeMapper->remapType(BB.getType()));
+    BB.setName(Name);
+  }
 }
 
 void Mapper::mapAppendingVariable(GlobalVariable &GV, Constant *InitPrefix,
@@ -1091,6 +1253,17 @@ void Mapper::scheduleRemapFunction(Function &F, unsigned MCID) {
   Worklist.push_back(WE);
 }
 
+void Mapper::scheduleRemapGlobalObjectMetadata(GlobalObject &GO, unsigned MCID) {
+  assert(AlreadyScheduled.insert(&GO).second && "Should not reschedule");
+  assert(MCID < MCs.size() && "Invalid mapping context");
+
+  WorklistEntry WE;
+  WE.Kind = WorklistEntry::RemapGlobalObjectMetadata;
+  WE.MCID = MCID;
+  WE.Data.RemapGO = &GO;
+  Worklist.push_back(WE);
+}
+
 void Mapper::addFlags(RemapFlags Flags) {
   assert(!hasWorkToDo() && "Expected to have flushed the worklist");
   this->Flags = this->Flags | Flags;
@@ -1119,8 +1292,9 @@ public:
 
 ValueMapper::ValueMapper(ValueToValueMapTy &VM, RemapFlags Flags,
                          ValueMapTypeRemapper *TypeMapper,
-                         ValueMaterializer *Materializer)
-    : pImpl(new Mapper(VM, Flags, TypeMapper, Materializer)) {}
+                         ValueMaterializer *Materializer,
+                         LLVMContext *SrcContext, LLVMContext *DestContext)
+  : pImpl(new Mapper(VM, Flags, TypeMapper, Materializer, SrcContext, DestContext)) {}
 
 ValueMapper::~ValueMapper() { delete getAsMapper(pImpl); }
 
@@ -1148,6 +1322,10 @@ Metadata *ValueMapper::mapMetadata(const Metadata &MD) {
 
 MDNode *ValueMapper::mapMDNode(const MDNode &N) {
   return cast_or_null<MDNode>(mapMetadata(N));
+}
+
+AttributeList ValueMapper::mapAttributeList(AttributeList Attrs) {
+  return getAsMapper(pImpl)->mapAttributeList(Attrs);
 }
 
 void ValueMapper::remapInstruction(Instruction &I) {
@@ -1181,4 +1359,8 @@ void ValueMapper::scheduleMapGlobalIndirectSymbol(GlobalIndirectSymbol &GIS,
 
 void ValueMapper::scheduleRemapFunction(Function &F, unsigned MCID) {
   getAsMapper(pImpl)->scheduleRemapFunction(F, MCID);
+}
+
+void ValueMapper::scheduleRemapGlobalObjectMetadata(GlobalObject &GO, unsigned MCID) {
+  getAsMapper(pImpl)->scheduleRemapGlobalObjectMetadata(GO, MCID);
 }

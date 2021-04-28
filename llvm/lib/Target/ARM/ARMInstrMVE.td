@@ -1900,8 +1900,13 @@ let Predicates = [HasMVEInt] in {
   def : Pat<(insertelt (v4f32 MQPR:$src1), (f32 SPR:$src2), imm:$lane),
             (INSERT_SUBREG (v4f32 (COPY_TO_REGCLASS MQPR:$src1, MQPR)), SPR:$src2, (SSubReg_f32_reg imm:$lane))>;
 
-  def : Pat<(insertelt (v8f16 MQPR:$src1), (f16 HPR:$src2), imm:$lane),
+  def : Pat<(insertelt (v8f16 MQPR:$src1), (f16 HPR:$src2), imm_even:$lane),
             (MVE_VMOV_to_lane_16 MQPR:$src1, (COPY_TO_REGCLASS (f16 HPR:$src2), rGPR), imm:$lane)>;
+  def : Pat<(insertelt (v8f16 MQPR:$src1), (f16 HPR:$src2), imm_odd:$lane),
+            (COPY_TO_REGCLASS (INSERT_SUBREG (v4f32 (COPY_TO_REGCLASS MQPR:$src1, MQPR)),
+                                (VINSH (EXTRACT_SUBREG MQPR:$src1, (SSubReg_f16_reg imm_odd:$lane)),
+                                       (COPY_TO_REGCLASS HPR:$src2, SPR)),
+                                (SSubReg_f16_reg imm_odd:$lane)), MQPR)>;
   def : Pat<(extractelt (v8f16 MQPR:$src), imm_even:$lane),
             (EXTRACT_SUBREG MQPR:$src, (SSubReg_f16_reg imm_even:$lane))>;
   def : Pat<(extractelt (v8f16 MQPR:$src), imm_odd:$lane),
@@ -5700,11 +5705,12 @@ defm MVE_VQDMLASH_qr  : MVE_VQDMLAH_qr_types<"vqdmlash",  0b1, 0b1>;
 defm MVE_VQRDMLASH_qr : MVE_VQDMLAH_qr_types<"vqrdmlash", 0b0, 0b1>;
 
 class MVE_VxDUP<string iname, string suffix, bits<2> size, bit bit_12,
-              list<dag> pattern=[]>
+                ValueType VT, SDPatternOperator vxdup>
   : MVE_p<(outs MQPR:$Qd, tGPREven:$Rn),
           (ins tGPREven:$Rn_src, MVE_VIDUP_imm:$imm), NoItinerary,
           iname, suffix, "$Qd, $Rn, $imm", vpred_r, "$Rn = $Rn_src",
-          pattern> {
+          [(set (VT MQPR:$Qd), (i32 tGPREven:$Rn),
+              (vxdup (i32 tGPREven:$Rn_src), (i32 imm:$imm)))]> {
   bits<4> Qd;
   bits<4> Rn;
   bits<2> imm;
@@ -5725,13 +5731,13 @@ class MVE_VxDUP<string iname, string suffix, bits<2> size, bit bit_12,
   let hasSideEffects = 0;
 }
 
-def MVE_VIDUPu8  : MVE_VxDUP<"vidup", "u8",  0b00, 0b0>;
-def MVE_VIDUPu16 : MVE_VxDUP<"vidup", "u16", 0b01, 0b0>;
-def MVE_VIDUPu32 : MVE_VxDUP<"vidup", "u32", 0b10, 0b0>;
+def MVE_VIDUPu8  : MVE_VxDUP<"vidup", "u8",  0b00, 0b0, v16i8, ARMvidup>;
+def MVE_VIDUPu16 : MVE_VxDUP<"vidup", "u16", 0b01, 0b0, v8i16, ARMvidup>;
+def MVE_VIDUPu32 : MVE_VxDUP<"vidup", "u32", 0b10, 0b0, v4i32, ARMvidup>;
 
-def MVE_VDDUPu8  : MVE_VxDUP<"vddup", "u8",  0b00, 0b1>;
-def MVE_VDDUPu16 : MVE_VxDUP<"vddup", "u16", 0b01, 0b1>;
-def MVE_VDDUPu32 : MVE_VxDUP<"vddup", "u32", 0b10, 0b1>;
+def MVE_VDDUPu8  : MVE_VxDUP<"vddup", "u8",  0b00, 0b1, v16i8, null_frag>;
+def MVE_VDDUPu16 : MVE_VxDUP<"vddup", "u16", 0b01, 0b1, v8i16, null_frag>;
+def MVE_VDDUPu32 : MVE_VxDUP<"vddup", "u32", 0b10, 0b1, v4i32, null_frag>;
 
 class MVE_VxWDUP<string iname, string suffix, bits<2> size, bit bit_12,
                  list<dag> pattern=[]>

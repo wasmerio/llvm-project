@@ -20,6 +20,7 @@
 
 namespace llvm {
 
+class AttributeList;
 class Constant;
 class Function;
 class GlobalIndirectSymbol;
@@ -98,6 +99,9 @@ enum RemapFlags {
   /// Any global values not in value map are mapped to null instead of mapping
   /// to self.  Illegal if RF_IgnoreMissingLocals is also set.
   RF_NullMapMissingGlobalValues = 8,
+
+  /// The destination module is in a different context from the source module.
+  RF_LinkAcrossContexts = 16,
 };
 
 inline RemapFlags operator|(RemapFlags LHS, RemapFlags RHS) {
@@ -146,7 +150,9 @@ class ValueMapper {
 public:
   ValueMapper(ValueToValueMapTy &VM, RemapFlags Flags = RF_None,
               ValueMapTypeRemapper *TypeMapper = nullptr,
-              ValueMaterializer *Materializer = nullptr);
+              ValueMaterializer *Materializer = nullptr,
+              LLVMContext *SrcContext = nullptr,
+              LLVMContext *DestContext = nullptr);
   ValueMapper(ValueMapper &&) = delete;
   ValueMapper(const ValueMapper &) = delete;
   ValueMapper &operator=(ValueMapper &&) = delete;
@@ -173,6 +179,8 @@ public:
   Value *mapValue(const Value &V);
   Constant *mapConstant(const Constant &C);
 
+  AttributeList mapAttributeList(AttributeList Attrs);
+
   void remapInstruction(Instruction &I);
   void remapFunction(Function &F);
 
@@ -186,6 +194,8 @@ public:
                                        Constant &Target,
                                        unsigned MappingContextID = 0);
   void scheduleRemapFunction(Function &F, unsigned MappingContextID = 0);
+  void scheduleRemapGlobalObjectMetadata(GlobalObject &GO,
+                                         unsigned MappingContextID = 0);
 };
 
 /// Look up or compute a value in the value map.

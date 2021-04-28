@@ -168,7 +168,8 @@ struct OutgoingArgHandler : public CallLowering::OutgoingValueHandler {
                      int FPDiff = 0)
       : OutgoingValueHandler(MIRBuilder, MRI, AssignFn), MIB(MIB),
         AssignFnVarArg(AssignFnVarArg), IsTailCall(IsTailCall), FPDiff(FPDiff),
-        StackSize(0), SPReg(0) {}
+        StackSize(0), SPReg(0),
+        Subtarget(MIRBuilder.getMF().getSubtarget<AArch64Subtarget>()) {}
 
   Register getStackAddress(uint64_t Size, int64_t Offset,
                            MachinePointerInfo &MPO,
@@ -240,7 +241,9 @@ struct OutgoingArgHandler : public CallLowering::OutgoingValueHandler {
                  ISD::ArgFlagsTy Flags,
                  CCState &State) override {
     bool Res;
-    if (Info.IsFixed)
+    bool IsCalleeWin = Subtarget.isCallingConvWin64(State.getCallingConv());
+    bool UseVarArgsCCForFixed = IsCalleeWin && State.isVarArg();
+    if (Info.IsFixed && !UseVarArgsCCForFixed)
       Res = AssignFn(ValNo, ValVT, LocVT, LocInfo, Flags, State);
     else
       Res = AssignFnVarArg(ValNo, ValVT, LocVT, LocInfo, Flags, State);
@@ -260,6 +263,8 @@ struct OutgoingArgHandler : public CallLowering::OutgoingValueHandler {
 
   // Cache the SP register vreg if we need it more than once in this call site.
   Register SPReg;
+
+  const AArch64Subtarget &Subtarget;
 };
 } // namespace
 
@@ -433,12 +438,20 @@ static void handleMustTailForwardedRegisters(MachineIRBuilder &MIRBuilder,
   }
 }
 
-bool AArch64CallLowering::fallBackToDAGISel(const Function &F) const {
+bool AArch64CallLowering::fallBackToDAGISel(const MachineFunction &MF) const {
+  auto &F = MF.getFunction();
   if (isa<ScalableVectorType>(F.getReturnType()))
     return true;
-  return llvm::any_of(F.args(), [](const Argument &A) {
-    return isa<ScalableVectorType>(A.getType());
-  });
+  if (llvm::any_of(F.args(), [](const Argument &A) {
+        return isa<ScalableVectorType>(A.getType());
+      }))
+    return true;
+  const auto &ST = MF.getSubtarget<AArch64Subtarget>();
+  if (!ST.hasNEON() || !ST.hasFPARMv8()) {
+    LLVM_DEBUG(dbgs() << "Falling back to SDAG because we don't support no-NEON\n");
+    return true;
+  }
+  return false;
 }
 
 bool AArch64CallLowering::lowerFormalArguments(
@@ -455,7 +468,7 @@ bool AArch64CallLowering::lowerFormalArguments(
     if (DL.getTypeStoreSize(Arg.getType()).isZero())
       continue;
 
-    ArgInfo OrigArg{VRegs[i], Arg.getType()};
+    ArgInfo OrigArg{VRegs[i], Arg};
     setArgFlags(OrigArg, i + AttributeList::FirstArgIndex, DL, F);
 
     splitToValueTypes(OrigArg, SplitArgs, DL, F.getCallingConv());

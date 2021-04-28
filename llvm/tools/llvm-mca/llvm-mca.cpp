@@ -236,6 +236,9 @@ const Target *getTarget(const char *ProgName) {
     return nullptr;
   }
 
+  // Update TripleName with the updated triple from the target lookup.
+  TripleName = TheTriple.str();
+
   // Return the found target.
   return TheTarget;
 }
@@ -244,8 +247,8 @@ ErrorOr<std::unique_ptr<ToolOutputFile>> getOutputStream() {
   if (OutputFilename == "")
     OutputFilename = "-";
   std::error_code EC;
-  auto Out =
-      std::make_unique<ToolOutputFile>(OutputFilename, EC, sys::fs::OF_Text);
+  auto Out = std::make_unique<ToolOutputFile>(OutputFilename, EC,
+                                              sys::fs::OF_TextWithCRLF);
   if (!EC)
     return std::move(Out);
   return EC;
@@ -278,7 +281,8 @@ static void processViewOptions(bool IsOutOfOrder) {
   processOptionImpl(PrintRegisterFileStats, Default);
   processOptionImpl(PrintDispatchStats, Default);
   processOptionImpl(PrintSchedulerStats, Default);
-  processOptionImpl(PrintRetireStats, Default);
+  if (IsOutOfOrder)
+    processOptionImpl(PrintRetireStats, Default);
 }
 
 // Returns true on success.

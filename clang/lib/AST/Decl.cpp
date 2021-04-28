@@ -1612,8 +1612,7 @@ void NamedDecl::printNestedNameSpecifier(raw_ostream &OS,
 
     // Suppress inline namespace if it doesn't make the result ambiguous.
     if (P.SuppressInlineNamespace && Ctx->isInlineNamespace() && NameInScope &&
-        Ctx->lookup(NameInScope).size() ==
-            Ctx->getParent()->lookup(NameInScope).size())
+        cast<NamespaceDecl>(Ctx)->isRedundantInlineQualifierFor(NameInScope))
       continue;
 
     // Skip non-named contexts such as linkage specifications and ExportDecls.
@@ -3266,6 +3265,8 @@ unsigned FunctionDecl::getBuiltinID(bool ConsiderWrapperFunctions) const {
 
   if (const auto *ABAA = getAttr<ArmBuiltinAliasAttr>()) {
     BuiltinID = ABAA->getBuiltinName()->getBuiltinID();
+  } else if (const auto *BAA = getAttr<BuiltinAliasAttr>()) {
+    BuiltinID = BAA->getBuiltinName()->getBuiltinID();
   } else if (const auto *A = getAttr<BuiltinAttr>()) {
     BuiltinID = A->getID();
   }
@@ -3276,7 +3277,7 @@ unsigned FunctionDecl::getBuiltinID(bool ConsiderWrapperFunctions) const {
   // If the function is marked "overloadable", it has a different mangled name
   // and is not the C library function.
   if (!ConsiderWrapperFunctions && hasAttr<OverloadableAttr>() &&
-      !hasAttr<ArmBuiltinAliasAttr>())
+      (!hasAttr<ArmBuiltinAliasAttr>() && !hasAttr<BuiltinAliasAttr>()))
     return 0;
 
   ASTContext &Context = getASTContext();

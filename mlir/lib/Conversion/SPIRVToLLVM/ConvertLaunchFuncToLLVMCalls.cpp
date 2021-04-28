@@ -24,6 +24,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FormatVariadic.h"
 
 using namespace mlir;
@@ -273,15 +274,13 @@ public:
 
     // Specify options to lower Standard to LLVM and pull in the conversion
     // patterns.
-    LowerToLLVMOptions options = {
-        /*useBarePtrCallConv=*/false,
-        /*emitCWrappers=*/true,
-        /*indexBitwidth=*/kDeriveIndexBitwidthFromDataLayout};
+    LowerToLLVMOptions options(module.getContext());
+    options.emitCWrappers = true;
     auto *context = module.getContext();
-    OwningRewritePatternList patterns;
+    RewritePatternSet patterns(context);
     LLVMTypeConverter typeConverter(context, options);
     populateStdToLLVMConversionPatterns(typeConverter, patterns);
-    patterns.insert<GPULaunchLowering>(typeConverter);
+    patterns.add<GPULaunchLowering>(typeConverter);
 
     // Pull in SPIR-V type conversion patterns to convert SPIR-V global
     // variable's type to LLVM dialect type.

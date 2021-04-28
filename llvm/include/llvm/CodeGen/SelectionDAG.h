@@ -833,6 +833,10 @@ public:
     return getNode(ISD::SPLAT_VECTOR, DL, VT, Op);
   }
 
+  /// Returns a vector of type ResVT whose elements contain the linear sequence
+  ///   <0, Step, Step * 2, Step * 3, ...>
+  SDValue getStepVector(const SDLoc &DL, EVT ResVT, SDValue Step);
+
   /// Returns an ISD::VECTOR_SHUFFLE node semantically equivalent to
   /// the shuffle node in input but with swapped operands.
   ///
@@ -1743,6 +1747,11 @@ public:
   /// known to be the same type.
   bool MaskedValueIsZero(SDValue Op, const APInt &Mask,
                          const APInt &DemandedElts, unsigned Depth = 0) const;
+
+  /// Return true if the DemandedElts of the vector Op are all zero.  We
+  /// use this predicate to simplify operations downstream.
+  bool MaskedElementsAreZero(SDValue Op, const APInt &DemandedElts,
+                             unsigned Depth = 0) const;
 
   /// Return true if '(Op & Mask) == Mask'.
   /// Op and Mask are known to be the same type.

@@ -40,6 +40,7 @@
 #include "llvm/ADT/ilist_node.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/Support/InstructionCost.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -573,16 +574,6 @@ public:
   /// Delete all blocks reachable from a given VPBlockBase, inclusive.
   static void deleteCFG(VPBlockBase *Entry);
 
-  void printAsOperand(raw_ostream &OS, bool PrintType) const {
-    OS << getName();
-  }
-
-  void print(raw_ostream &OS) const {
-    // TODO: Only printing VPBB name for now since we only have dot printing
-    // support for VPInstructions/Recipes.
-    printAsOperand(OS, false);
-  }
-
   /// Return true if it is legal to hoist instructions into this block.
   bool isLegalToHoistInto() {
     // There are currently no constraints that prevent an instruction to be
@@ -593,6 +584,30 @@ public:
   /// Replace all operands of VPUsers in the block with \p NewValue and also
   /// replaces all uses of VPValues defined in the block with NewValue.
   virtual void dropAllReferences(VPValue *NewValue) = 0;
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  void printAsOperand(raw_ostream &OS, bool PrintType) const {
+    OS << getName();
+  }
+
+  /// Print plain-text dump of this VPBlockBase to \p O, prefixing all lines
+  /// with \p Indent. \p SlotTracker is used to print unnamed VPValue's using
+  /// consequtive numbers.
+  ///
+  /// Note that the numbering is applied to the whole VPlan, so printing
+  /// individual blocks is consistent with the whole VPlan printing.
+  virtual void print(raw_ostream &O, const Twine &Indent,
+                     VPSlotTracker &SlotTracker) const = 0;
+
+  /// Print plain-text dump of this VPlan to \p O.
+  void print(raw_ostream &O) const {
+    VPSlotTracker SlotTracker(getPlan());
+    print(O, "", SlotTracker);
+  }
+
+  /// Dump this VPBlockBase to dbgs().
+  LLVM_DUMP_METHOD void dump() const { print(dbgs()); }
+#endif
 };
 
 /// VPRecipeBase is a base class modeling a sequence of one or more output IR
@@ -667,6 +682,9 @@ public:
     // All VPDefs are also VPRecipeBases.
     return true;
   }
+
+  /// Returns true if the recipe may have side-effects.
+  bool mayHaveSideEffects() const;
 };
 
 inline bool VPUser::classof(const VPDef *Def) {
@@ -748,12 +766,14 @@ public:
   /// provided.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the VPInstruction to \p O.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
 
   /// Print the VPInstruction to dbgs() (for debugging).
-  void dump() const;
+  LLVM_DUMP_METHOD void dump() const;
+#endif
 
   /// Return true if this instruction may modify memory.
   bool mayWriteToMemory() const {
@@ -807,9 +827,11 @@ public:
   /// Produce widened copies of all Ingredients.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 };
 
 /// A recipe for widening Call instructions.
@@ -831,9 +853,11 @@ public:
   /// Produce a widened version of the call instruction.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 };
 
 /// A recipe for widening select instructions.
@@ -860,9 +884,11 @@ public:
   /// Produce a widened version of the select instruction.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 };
 
 /// A recipe for handling GEP instructions.
@@ -898,9 +924,11 @@ public:
   /// Generate the gep nodes.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 };
 
 /// A recipe for handling phi nodes of integer and floating-point inductions,
@@ -931,9 +959,11 @@ public:
   /// needed by their users.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 
   /// Returns the start value of the induction.
   VPValue *getStartValue() { return getOperand(0); }
@@ -993,9 +1023,11 @@ public:
   /// Generate the phi/select nodes.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 
   /// Returns the start value of the phi, if it is a reduction.
   VPValue *getStartValue() {
@@ -1051,9 +1083,11 @@ public:
   /// Generate the phi/select nodes.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 };
 
 /// VPInterleaveRecipe is a recipe for transforming an interleave group of load
@@ -1114,9 +1148,11 @@ public:
   /// Generate the wide load or store, and shuffles.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 
   const InterleaveGroup<Instruction> *getInterleaveGroup() { return IG; }
 };
@@ -1154,9 +1190,11 @@ public:
   /// Generate the reduction in the loop
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 
   /// The VPValue of the scalar Chain being accumulated.
   VPValue *getChainOp() const { return getOperand(0); }
@@ -1214,13 +1252,17 @@ public:
 
   void setAlsoPack(bool Pack) { AlsoPack = Pack; }
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 
   bool isUniform() const { return IsUniform; }
 
   bool isPacked() const { return AlsoPack; }
+
+  bool isPredicated() const { return IsPredicated; }
 };
 
 /// A recipe for generating conditional branches on the bits of a mask.
@@ -1241,16 +1283,17 @@ public:
   /// conditional branch.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override {
-    O << " +\n" << Indent << "\"BRANCH-ON-MASK ";
+    O << Indent << "BRANCH-ON-MASK ";
     if (VPValue *Mask = getMask())
       Mask->printAsOperand(O, SlotTracker);
     else
       O << " All-One";
-    O << "\\l\"";
   }
+#endif
 
   /// Return the mask used by this recipe. Note that a full mask is represented
   /// by a nullptr.
@@ -1283,9 +1326,11 @@ public:
   /// Generates phi nodes for live-outs as needed to retain SSA form.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 };
 
 /// A Recipe for widening load/store operations.
@@ -1350,9 +1395,11 @@ public:
   /// Generate the wide load/store.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 };
 
 /// A Recipe for widening the canonical induction variable of the vector loop.
@@ -1374,9 +1421,11 @@ public:
   /// step = <VF*UF, VF*UF, ..., VF*UF>.
   void execute(VPTransformState &State) override;
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void print(raw_ostream &O, const Twine &Indent,
              VPSlotTracker &SlotTracker) const override;
+#endif
 };
 
 /// VPBasicBlock serves as the leaf of the Hierarchical Control-Flow Graph. It
@@ -1460,6 +1509,17 @@ public:
   iterator getFirstNonPhi();
 
   void dropAllReferences(VPValue *NewValue) override;
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  /// Print this VPBsicBlock to \p O, prefixing all lines with \p Indent. \p
+  /// SlotTracker is used to print unnamed VPValue's using consequtive numbers.
+  ///
+  /// Note that the numbering is applied to the whole VPlan, so printing
+  /// individual blocks is consistent with the whole VPlan printing.
+  void print(raw_ostream &O, const Twine &Indent,
+             VPSlotTracker &SlotTracker) const override;
+  using VPBlockBase::print; // Get the print(raw_stream &O) version.
+#endif
 
 private:
   /// Create an IR BasicBlock to hold the output instructions generated by this
@@ -1552,6 +1612,18 @@ public:
   void execute(struct VPTransformState *State) override;
 
   void dropAllReferences(VPValue *NewValue) override;
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  /// Print this VPRegionBlock to \p O (recursively), prefixing all lines with
+  /// \p Indent. \p SlotTracker is used to print unnamed VPValue's using
+  /// consequtive numbers.
+  ///
+  /// Note that the numbering is applied to the whole VPlan, so printing
+  /// individual regions is consistent with the whole VPlan printing.
+  void print(raw_ostream &O, const Twine &Indent,
+             VPSlotTracker &SlotTracker) const override;
+  using VPBlockBase::print; // Get the print(raw_stream &O) version.
+#endif
 };
 
 //===----------------------------------------------------------------------===//
@@ -1676,6 +1748,136 @@ struct GraphTraits<Inverse<VPRegionBlock *>>
   }
 };
 
+/// Iterator to traverse all successors of a VPBlockBase node. This includes the
+/// entry node of VPRegionBlocks. Exit blocks of a region implicitly have their
+/// parent region's successors. This ensures all blocks in a region are visited
+/// before any blocks in a successor region when doing a reverse post-order
+// traversal of the graph.
+template <typename BlockPtrTy>
+class VPAllSuccessorsIterator
+    : public iterator_facade_base<VPAllSuccessorsIterator<BlockPtrTy>,
+                                  std::forward_iterator_tag, VPBlockBase> {
+  BlockPtrTy Block;
+  /// Index of the current successor. For VPBasicBlock nodes, this simply is the
+  /// index for the successor array. For VPRegionBlock, SuccessorIdx == 0 is
+  /// used for the region's entry block, and SuccessorIdx - 1 are the indices
+  /// for the successor array.
+  size_t SuccessorIdx;
+
+  static BlockPtrTy getBlockWithSuccs(BlockPtrTy Current) {
+    while (Current && Current->getNumSuccessors() == 0)
+      Current = Current->getParent();
+    return Current;
+  }
+
+  /// Templated helper to dereference successor \p SuccIdx of \p Block. Used by
+  /// both the const and non-const operator* implementations.
+  template <typename T1> static T1 deref(T1 Block, unsigned SuccIdx) {
+    if (auto *R = dyn_cast<VPRegionBlock>(Block)) {
+      if (SuccIdx == 0)
+        return R->getEntry();
+      SuccIdx--;
+    }
+
+    // For exit blocks, use the next parent region with successors.
+    return getBlockWithSuccs(Block)->getSuccessors()[SuccIdx];
+  }
+
+public:
+  VPAllSuccessorsIterator(BlockPtrTy Block, size_t Idx = 0)
+      : Block(Block), SuccessorIdx(Idx) {}
+  VPAllSuccessorsIterator(const VPAllSuccessorsIterator &Other)
+      : Block(Other.Block), SuccessorIdx(Other.SuccessorIdx) {}
+
+  VPAllSuccessorsIterator &operator=(const VPAllSuccessorsIterator &R) {
+    Block = R.Block;
+    SuccessorIdx = R.SuccessorIdx;
+    return *this;
+  }
+
+  static VPAllSuccessorsIterator end(BlockPtrTy Block) {
+    BlockPtrTy ParentWithSuccs = getBlockWithSuccs(Block);
+    unsigned NumSuccessors = ParentWithSuccs
+                                 ? ParentWithSuccs->getNumSuccessors()
+                                 : Block->getNumSuccessors();
+
+    if (auto *R = dyn_cast<VPRegionBlock>(Block))
+      return {R, NumSuccessors + 1};
+    return {Block, NumSuccessors};
+  }
+
+  bool operator==(const VPAllSuccessorsIterator &R) const {
+    return Block == R.Block && SuccessorIdx == R.SuccessorIdx;
+  }
+
+  const VPBlockBase *operator*() const { return deref(Block, SuccessorIdx); }
+
+  BlockPtrTy operator*() { return deref(Block, SuccessorIdx); }
+
+  VPAllSuccessorsIterator &operator++() {
+    SuccessorIdx++;
+    return *this;
+  }
+
+  VPAllSuccessorsIterator operator++(int X) {
+    VPAllSuccessorsIterator Orig = *this;
+    SuccessorIdx++;
+    return Orig;
+  }
+};
+
+/// Helper for GraphTraits specialization that traverses through VPRegionBlocks.
+template <typename BlockTy> class VPBlockRecursiveTraversalWrapper {
+  BlockTy Entry;
+
+public:
+  VPBlockRecursiveTraversalWrapper(BlockTy Entry) : Entry(Entry) {}
+  BlockTy getEntry() { return Entry; }
+};
+
+/// GraphTraits specialization to recursively traverse VPBlockBase nodes,
+/// including traversing through VPRegionBlocks.  Exit blocks of a region
+/// implicitly have their parent region's successors. This ensures all blocks in
+/// a region are visited before any blocks in a successor region when doing a
+/// reverse post-order traversal of the graph.
+template <>
+struct GraphTraits<VPBlockRecursiveTraversalWrapper<VPBlockBase *>> {
+  using NodeRef = VPBlockBase *;
+  using ChildIteratorType = VPAllSuccessorsIterator<VPBlockBase *>;
+
+  static NodeRef
+  getEntryNode(VPBlockRecursiveTraversalWrapper<VPBlockBase *> N) {
+    return N.getEntry();
+  }
+
+  static inline ChildIteratorType child_begin(NodeRef N) {
+    return ChildIteratorType(N);
+  }
+
+  static inline ChildIteratorType child_end(NodeRef N) {
+    return ChildIteratorType::end(N);
+  }
+};
+
+template <>
+struct GraphTraits<VPBlockRecursiveTraversalWrapper<const VPBlockBase *>> {
+  using NodeRef = const VPBlockBase *;
+  using ChildIteratorType = VPAllSuccessorsIterator<const VPBlockBase *>;
+
+  static NodeRef
+  getEntryNode(VPBlockRecursiveTraversalWrapper<const VPBlockBase *> N) {
+    return N.getEntry();
+  }
+
+  static inline ChildIteratorType child_begin(NodeRef N) {
+    return ChildIteratorType(N);
+  }
+
+  static inline ChildIteratorType child_end(NodeRef N) {
+    return ChildIteratorType::end(N);
+  }
+};
+
 /// VPlan models a candidate for vectorization, encoding various decisions take
 /// to produce efficient output IR, including which branches, basic-blocks and
 /// output IR instructions to generate, and their cost. VPlan holds a
@@ -1699,7 +1901,7 @@ class VPlan {
   // VPlan. External definitions must be immutable and hold a pointer to its
   // underlying IR that will be used to implement its structural comparison
   // (operators '==' and '<').
-  SmallPtrSet<VPValue *, 16> VPExternalDefs;
+  SetVector<VPValue *> VPExternalDefs;
 
   /// Represents the backedge taken count of the original loop, for folding
   /// the tail.
@@ -1767,9 +1969,7 @@ public:
 
   /// Add \p VPVal to the pool of external definitions if it's not already
   /// in the pool.
-  void addExternalDef(VPValue *VPVal) {
-    VPExternalDefs.insert(VPVal);
-  }
+  void addExternalDef(VPValue *VPVal) { VPExternalDefs.insert(VPVal); }
 
   void addVPValue(Value *V) {
     assert(V && "Trying to add a null Value to VPlan");
@@ -1804,8 +2004,16 @@ public:
   VPLoopInfo &getVPLoopInfo() { return VPLInfo; }
   const VPLoopInfo &getVPLoopInfo() const { return VPLInfo; }
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  /// Print this VPlan to \p O.
+  void print(raw_ostream &O) const;
+
+  /// Print this VPlan in DOT format to \p O.
+  void printDOT(raw_ostream &O) const;
+
   /// Dump the plan to stderr (for debugging).
-  void dump() const;
+  LLVM_DUMP_METHOD void dump() const;
+#endif
 
   /// Returns a range mapping the values the range \p Operands to their
   /// corresponding VPValues.
@@ -1825,14 +2033,10 @@ private:
                                   BasicBlock *LoopExitBB);
 };
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
 /// VPlanPrinter prints a given VPlan to a given output stream. The printing is
 /// indented and follows the dot format.
 class VPlanPrinter {
-  friend inline raw_ostream &operator<<(raw_ostream &OS, const VPlan &Plan);
-  friend inline raw_ostream &operator<<(raw_ostream &OS,
-                                        const struct VPlanIngredient &I);
-
-private:
   raw_ostream &OS;
   const VPlan &Plan;
   unsigned Depth = 0;
@@ -1842,9 +2046,6 @@ private:
   SmallDenseMap<const VPBlockBase *, unsigned> BlockID;
 
   VPSlotTracker SlotTracker;
-
-  VPlanPrinter(raw_ostream &O, const VPlan &P)
-      : OS(O), Plan(P), SlotTracker(&P) {}
 
   /// Handle indentation.
   void bumpIndent(int b) { Indent = std::string((Depth += b) * TabWidth, ' '); }
@@ -1875,27 +2076,31 @@ private:
   void drawEdge(const VPBlockBase *From, const VPBlockBase *To, bool Hidden,
                 const Twine &Label);
 
-  void dump();
+public:
+  VPlanPrinter(raw_ostream &O, const VPlan &P)
+      : OS(O), Plan(P), SlotTracker(&P) {}
 
-  static void printAsIngredient(raw_ostream &O, const Value *V);
+  LLVM_DUMP_METHOD void dump();
 };
 
 struct VPlanIngredient {
   const Value *V;
 
   VPlanIngredient(const Value *V) : V(V) {}
+
+  void print(raw_ostream &O) const;
 };
 
 inline raw_ostream &operator<<(raw_ostream &OS, const VPlanIngredient &I) {
-  VPlanPrinter::printAsIngredient(OS, I.V);
+  I.print(OS);
   return OS;
 }
 
 inline raw_ostream &operator<<(raw_ostream &OS, const VPlan &Plan) {
-  VPlanPrinter Printer(OS, Plan);
-  Printer.dump();
+  Plan.print(OS);
   return OS;
 }
+#endif
 
 //===----------------------------------------------------------------------===//
 // VPlan Utilities
@@ -1995,6 +2200,26 @@ public:
         Count++;
     }
     return Count;
+  }
+
+  /// Return an iterator range over \p Range which only includes \p BlockTy
+  /// blocks. The accesses are casted to \p BlockTy.
+  template <typename BlockTy, typename T>
+  static auto blocksOnly(const T &Range) {
+    // Create BaseTy with correct const-ness based on BlockTy.
+    using BaseTy =
+        typename std::conditional<std::is_const<BlockTy>::value,
+                                  const VPBlockBase, VPBlockBase>::type;
+
+    // We need to first create an iterator range over (const) BlocktTy & instead
+    // of (const) BlockTy * for filter_range to work properly.
+    auto Mapped =
+        map_range(Range, [](BaseTy *Block) -> BaseTy & { return *Block; });
+    auto Filter = make_filter_range(
+        Mapped, [](BaseTy &Block) { return isa<BlockTy>(&Block); });
+    return map_range(Filter, [](BaseTy &Block) -> BlockTy * {
+      return cast<BlockTy>(&Block);
+    });
   }
 };
 
@@ -2111,8 +2336,10 @@ class VPlanSlp {
                                        SmallPtrSetImpl<VPValue *> &Candidates,
                                        VPInterleavedAccessInfo &IAI);
 
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print bundle \p Values to dbgs().
   void dumpBundle(ArrayRef<VPValue *> Values);
+#endif
 
 public:
   VPlanSlp(VPInterleavedAccessInfo &IAI, VPBasicBlock &BB) : IAI(IAI), BB(BB) {}

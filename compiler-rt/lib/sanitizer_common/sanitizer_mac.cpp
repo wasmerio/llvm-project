@@ -142,6 +142,12 @@ uptr internal_munmap(void *addr, uptr length) {
   return munmap(addr, length);
 }
 
+uptr internal_mremap(void *old_address, uptr old_size, uptr new_size, int flags,
+                     void *new_address) {
+  CHECK(false && "internal_mremap is unimplemented on Mac");
+  return 0;
+}
+
 int internal_mprotect(void *addr, uptr length, int prot) {
   return mprotect(addr, length, prot);
 }
@@ -453,7 +459,7 @@ uptr ReadBinaryName(/*out*/char *buf, uptr buf_len) {
   // On OS X the executable path is saved to the stack by dyld. Reading it
   // from there is much faster than calling dladdr, especially for large
   // binaries with symbols.
-  InternalScopedString exe_path(kMaxPathLength);
+  InternalMmapVector<char> exe_path(kMaxPathLength);
   uint32_t size = exe_path.size();
   if (_NSGetExecutablePath(exe_path.data(), &size) == 0 &&
       realpath(exe_path.data(), buf) != 0) {
@@ -1019,7 +1025,7 @@ void MaybeReexec() {
   if (DyldNeedsEnvVariable() && !lib_is_in_env) {
     // DYLD_INSERT_LIBRARIES is not set or does not contain the runtime
     // library.
-    InternalScopedString program_name(1024);
+    InternalMmapVector<char> program_name(1024);
     uint32_t buf_size = program_name.size();
     _NSGetExecutablePath(program_name.data(), &buf_size);
     char *new_env = const_cast<char*>(info.dli_fname);
@@ -1178,26 +1184,35 @@ static uptr GetTaskInfoMaxAddress() {
 
 uptr GetMaxUserVirtualAddress() {
   static uptr max_vm = GetTaskInfoMaxAddress();
-  if (max_vm != 0)
-    return max_vm - 1;
+  if (max_vm != 0) {
+    const uptr ret_value = max_vm - 1;
+    CHECK_LE(ret_value, SANITIZER_MMAP_RANGE_SIZE);
+    return ret_value;
+  }
 
   // xnu cannot provide vm address limit
 # if SANITIZER_WORDSIZE == 32
-  return 0xffe00000 - 1;
+  constexpr uptr fallback_max_vm = 0xffe00000 - 1;
 # else
-  return 0x200000000 - 1;
+  constexpr uptr fallback_max_vm = 0x200000000 - 1;
 # endif
+  static_assert(fallback_max_vm <= SANITIZER_MMAP_RANGE_SIZE,
+                "Max virtual address must be less than mmap range size.");
+  return fallback_max_vm;
 }
 
 #else // !SANITIZER_IOS
 
 uptr GetMaxUserVirtualAddress() {
 # if SANITIZER_WORDSIZE == 64
-  return (1ULL << 47) - 1;  // 0x00007fffffffffffUL;
+  constexpr uptr max_vm = (1ULL << 47) - 1;  // 0x00007fffffffffffUL;
 # else // SANITIZER_WORDSIZE == 32
   static_assert(SANITIZER_WORDSIZE == 32, "Wrong wordsize");
-  return (1ULL << 32) - 1;  // 0xffffffff;
+  constexpr uptr max_vm = (1ULL << 32) - 1;  // 0xffffffff;
 # endif
+  static_assert(max_vm <= SANITIZER_MMAP_RANGE_SIZE,
+                "Max virtual address must be less than mmap range size.");
+  return max_vm;
 }
 #endif
 
@@ -1250,6 +1265,12 @@ uptr MapDynamicShadow(uptr shadow_size_bytes, uptr shadow_scale,
   CHECK_NE((uptr)0, shadow_start);
   CHECK(IsAligned(shadow_start, alignment));
   return shadow_start;
+}
+
+uptr MapDynamicShadowAndAliases(uptr shadow_size, uptr alias_size,
+                                uptr num_aliases, uptr ring_buffer_size) {
+  CHECK(false && "HWASan aliasing is unimplemented on Mac");
+  return 0;
 }
 
 uptr FindAvailableMemoryRange(uptr size, uptr alignment, uptr left_padding,

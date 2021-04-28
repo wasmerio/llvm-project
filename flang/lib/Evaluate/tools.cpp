@@ -782,20 +782,22 @@ const Symbol *GetLastTarget(const SymbolVector &symbols) {
 }
 
 struct CollectSymbolsHelper
-    : public SetTraverse<CollectSymbolsHelper, semantics::SymbolSet> {
-  using Base = SetTraverse<CollectSymbolsHelper, semantics::SymbolSet>;
+    : public SetTraverse<CollectSymbolsHelper, semantics::UnorderedSymbolSet> {
+  using Base = SetTraverse<CollectSymbolsHelper, semantics::UnorderedSymbolSet>;
   CollectSymbolsHelper() : Base{*this} {}
   using Base::operator();
-  semantics::SymbolSet operator()(const Symbol &symbol) const {
+  semantics::UnorderedSymbolSet operator()(const Symbol &symbol) const {
     return {symbol};
   }
 };
-template <typename A> semantics::SymbolSet CollectSymbols(const A &x) {
+template <typename A> semantics::UnorderedSymbolSet CollectSymbols(const A &x) {
   return CollectSymbolsHelper{}(x);
 }
-template semantics::SymbolSet CollectSymbols(const Expr<SomeType> &);
-template semantics::SymbolSet CollectSymbols(const Expr<SomeInteger> &);
-template semantics::SymbolSet CollectSymbols(const Expr<SubscriptInteger> &);
+template semantics::UnorderedSymbolSet CollectSymbols(const Expr<SomeType> &);
+template semantics::UnorderedSymbolSet CollectSymbols(
+    const Expr<SomeInteger> &);
+template semantics::UnorderedSymbolSet CollectSymbols(
+    const Expr<SubscriptInteger> &);
 
 // HasVectorSubscript()
 struct HasVectorSubscriptHelper : public AnyTraverse<HasVectorSubscriptHelper> {
@@ -1172,12 +1174,37 @@ int CountNonConstantLenParameters(const DerivedTypeSpec &type) {
       });
 }
 
+// Are the type parameters of type1 compile-time compatible with the
+// corresponding kind type parameters of type2?  Return true if all constant
+// valued parameters are equal.
+// Used to check assignment statements and argument passing.  See 15.5.2.4(4)
+bool AreTypeParamCompatible(const semantics::DerivedTypeSpec &type1,
+    const semantics::DerivedTypeSpec &type2) {
+  for (const auto &[name, param1] : type1.parameters()) {
+    if (semantics::MaybeIntExpr paramExpr1{param1.GetExplicit()}) {
+      if (IsConstantExpr(*paramExpr1)) {
+        const semantics::ParamValue *param2{type2.FindParameter(name)};
+        if (param2) {
+          if (semantics::MaybeIntExpr paramExpr2{param2->GetExplicit()}) {
+            if (IsConstantExpr(*paramExpr2)) {
+              if (ToInt64(*paramExpr1) != ToInt64(*paramExpr2)) {
+                return false;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return true;
+}
+
 const Symbol &GetUsedModule(const UseDetails &details) {
   return DEREF(details.symbol().owner().symbol());
 }
 
 static const Symbol *FindFunctionResult(
-    const Symbol &original, SymbolSet &seen) {
+    const Symbol &original, UnorderedSymbolSet &seen) {
   const Symbol &root{GetAssociationRoot(original)};
   ;
   if (!seen.insert(root).second) {
@@ -1199,8 +1226,27 @@ static const Symbol *FindFunctionResult(
 }
 
 const Symbol *FindFunctionResult(const Symbol &symbol) {
-  SymbolSet seen;
+  UnorderedSymbolSet seen;
   return FindFunctionResult(symbol, seen);
+}
+
+// These are here in Evaluate/tools.cpp so that Evaluate can use
+// them; they cannot be defined in symbol.h due to the dependence
+// on Scope.
+
+bool SymbolSourcePositionCompare::operator()(
+    const SymbolRef &x, const SymbolRef &y) const {
+  return x->GetSemanticsContext().allCookedSources().Precedes(
+      x->name(), y->name());
+}
+bool SymbolSourcePositionCompare::operator()(
+    const MutableSymbolRef &x, const MutableSymbolRef &y) const {
+  return x->GetSemanticsContext().allCookedSources().Precedes(
+      x->name(), y->name());
+}
+
+SemanticsContext &Symbol::GetSemanticsContext() const {
+  return DEREF(owner_).context();
 }
 
 } // namespace Fortran::semantics

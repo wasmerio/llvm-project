@@ -738,6 +738,8 @@ static uint64_t getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_SWIFT_SELF;
   case Attribute::UWTable:
     return bitc::ATTR_KIND_UW_TABLE;
+  case Attribute::VScaleRange:
+    return bitc::ATTR_KIND_VSCALE_RANGE;
   case Attribute::WillReturn:
     return bitc::ATTR_KIND_WILLRETURN;
   case Attribute::WriteOnly:
@@ -1874,7 +1876,7 @@ void ModuleBitcodeWriter::writeDIArgList(const DIArgList *N,
                                          unsigned Abbrev) {
   Record.reserve(N->getArgs().size());
   for (ValueAsMetadata *MD : N->getArgs())
-    Record.push_back(VE.getMetadataOrNullID(MD));
+    Record.push_back(VE.getMetadataID(MD));
 
   Stream.EmitRecord(bitc::METADATA_ARG_LIST, Record, Abbrev);
   Record.clear();
